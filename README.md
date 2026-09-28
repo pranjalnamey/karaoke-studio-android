@@ -24,3 +24,6 @@ A GitHub Actions run produces `app-debug.apk` as the artifact `KaraokeStudio-And
 
 Target SDK: 35
 Minimum Android: 10 (API 29)
+
+
+Build trigger: Android APK CI configured.
