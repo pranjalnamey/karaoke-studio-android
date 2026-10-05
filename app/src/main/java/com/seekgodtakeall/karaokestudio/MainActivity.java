@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
 import android.content.Context;
+import android.content.ClipboardManager;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -45,6 +47,8 @@ public class MainActivity extends Activity {
     private static final int PICK_AUDIO = 4401;
     private static final String PREFS = "karaoke_studio_v2";
     private static final String KEY_API = "api_base";
+    private static final String DEFAULT_API = "https://karaoke-studio-backend-production.up.railway.app";
+    private static final String CONVERTER_URL = "https://ytmp3pc.com/";
     private static final int BG = Color.rgb(8, 11, 20);
     private static final int CARD = Color.rgb(20, 25, 40);
     private static final int CARD_ALT = Color.rgb(27, 33, 51);
@@ -167,8 +171,8 @@ public class MainActivity extends Activity {
         desc.setPadding(0, 0, 0, dp(24));
         p.addView(desc);
 
-        addActionCard(p, "▶", "YouTube → Karaoke", "Remove lead vocals and keep music + backing vocals.", "yt_karaoke");
-        addActionCard(p, "♫", "YouTube → MP3", "Create a high-quality MP3 from content you own or are authorized to process.", "yt_mp3");
+        addActionCard(p, "▶", "YouTube → Karaoke", "Open the converter, download your authorized MP3, then import it for AI vocal removal.", "yt_karaoke");
+        addActionCard(p, "♫", "YouTube → MP3", "Open the converter in your browser for content you own or are authorized to process.", "yt_mp3");
         addActionCard(p, "🎤", "Upload → Karaoke", "Choose an audio file from your phone and create a karaoke version.", "upload_karaoke");
         addActionCard(p, "✦", "Master Audio", "Enhance loudness, clarity and polish with mastering presets.", "master");
 
@@ -221,10 +225,6 @@ public class MainActivity extends Activity {
         card.addView(arrow);
 
         card.setOnClickListener(v -> {
-            if (!isConfigured()) {
-                showConfigureFirstDialog();
-                return;
-            }
             if ("yt_karaoke".equals(action)) showYoutubeScreen(true);
             else if ("yt_mp3".equals(action)) showYoutubeScreen(false);
             else if ("upload_karaoke".equals(action)) chooseAudio("upload_karaoke");
@@ -279,16 +279,15 @@ public class MainActivity extends Activity {
     }
 
     private boolean isConfigured() {
-        String api = prefs.getString(KEY_API, "");
-        return api != null && api.trim().startsWith("http");
+        return apiBase().startsWith("http");
     }
 
     private String apiBase() {
-        String s = prefs.getString(KEY_API, "");
-        if (s == null) return "";
-        s = s.trim();
-        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
-        return s;
+        String value = prefs.getString(KEY_API, DEFAULT_API);
+        if (value == null || value.trim().isEmpty()) value = DEFAULT_API;
+        value = value.trim();
+        while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
+        return value;
     }
 
     private void showSettings() {
@@ -299,7 +298,7 @@ public class MainActivity extends Activity {
         h.setPadding(0, dp(8), 0, dp(6));
         p.addView(h);
 
-        TextView d = text("Connect this app to the independent Karaoke Studio cloud backend. Your PC is not used.", 15, MUTED, false);
+        TextView d = text("The production cloud service is built into the app. Change this address only if you are testing another backend.", 15, MUTED, false);
         d.setPadding(0, 0, 0, dp(20));
         p.addView(d);
 
@@ -383,8 +382,8 @@ public class MainActivity extends Activity {
         p.addView(h);
 
         TextView d = text(karaoke
-                ? "Paste a link to content you own or are authorized to process. We'll extract the audio and create a karaoke track."
-                : "Paste a link to content you own or are authorized to process and create a high-quality MP3.",
+                ? "Paste a YouTube link for content you own or are authorized to process. We'll open the converter in your browser. After the MP3 downloads, return here and import it for karaoke processing."
+                : "Paste a YouTube link for content you own or are authorized to process. We'll open the converter in your browser and copy the link for you.",
                 15, MUTED, false);
         d.setPadding(0, 0, 0, dp(20));
         p.addView(d);
@@ -404,25 +403,72 @@ public class MainActivity extends Activity {
         p.addView(url, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
 
-        if (karaoke) {
-            addInfoChip(p, "Backing vocals preserved when the source separation model can isolate them.");
-        } else {
-            addInfoChip(p, "MP3 output uses the highest-quality available authorized source audio.");
-        }
+        addInfoChip(p, karaoke
+                ? "Step 1: Open converter and download MP3. Step 2: Return here and import the downloaded MP3. Step 3: Our cloud AI removes the lead vocal."
+                : "The conversion happens in your browser. Karaoke Studio does not send your YouTube link through the Railway server.");
 
-        Button go = primaryButton(karaoke ? "Create karaoke track" : "Create MP3");
-        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(
+        Button open = primaryButton("Open converter");
+        LinearLayout.LayoutParams op = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
-        gp.topMargin = dp(18);
-        p.addView(go, gp);
-        go.setOnClickListener(v -> {
+        op.topMargin = dp(18);
+        p.addView(open, op);
+        open.setOnClickListener(v -> {
             String value = url.getText().toString().trim();
-            if (!value.startsWith("http")) {
+            if (!isYoutubeUrl(value)) {
                 url.setError("Paste a valid YouTube URL");
                 return;
             }
-            startYoutubeJob(value, karaoke);
+            openExternalConverter(value);
         });
+
+        if (karaoke) {
+            Button importMp3 = new Button(this);
+            importMp3.setText("Import downloaded MP3");
+            importMp3.setTextColor(TEXT);
+            importMp3.setTextSize(16);
+            importMp3.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            importMp3.setAllCaps(false);
+            importMp3.setBackground(outlined(CARD_ALT, ACCENT, 16));
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+            ip.topMargin = dp(12);
+            p.addView(importMp3, ip);
+            importMp3.setOnClickListener(v -> chooseAudio("youtube_import_karaoke"));
+        }
+
+        TextView privacy = text("The converter opens in your normal browser, not inside the app. Only use media you have permission to download or process.", 12, MUTED, false);
+        privacy.setPadding(0, dp(16), 0, 0);
+        p.addView(privacy);
+    }
+
+    private boolean isYoutubeUrl(String value) {
+        try {
+            Uri uri = Uri.parse(value);
+            String host = uri.getHost();
+            if (host == null) return false;
+            host = host.toLowerCase();
+            return host.equals("youtu.be") || host.equals("youtube.com") || host.endsWith(".youtube.com");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void openExternalConverter(String youtubeUrl) {
+        try {
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("YouTube link", youtubeUrl));
+            }
+            Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(CONVERTER_URL));
+            startActivity(browser);
+            Toast.makeText(this, "YouTube link copied. Paste it into the converter, download MP3, then return to Karaoke Studio.", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Could not open browser")
+                    .setMessage("Open " + CONVERTER_URL + " in your browser and paste the YouTube link.")
+                    .setPositiveButton("OK", null)
+                    .show();
+        }
     }
 
     private void addInfoChip(LinearLayout parent, String copy) {
@@ -450,8 +496,13 @@ public class MainActivity extends Activity {
             pendingAudio = data.getData();
             try { getContentResolver().takePersistableUriPermission(pendingAudio, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
             catch (Exception ignored) {}
-            if ("master".equals(pendingAction)) showMasterOptions();
-            else showUploadKaraokeOptions();
+            if ("master".equals(pendingAction)) {
+                showMasterOptions();
+            } else if ("youtube_import_karaoke".equals(pendingAction)) {
+                startUploadJob("/jobs/upload-karaoke", "Creating karaoke");
+            } else {
+                showUploadKaraokeOptions();
+            }
         }
     }
 
