@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
-ENV KARAOKE_DATA_DIR=/data
+ENV KARAOKE_DATA_DIR=/data\nENV OMP_NUM_THREADS=1\nENV MKL_NUM_THREADS=1\nENV OPENBLAS_NUM_THREADS=1\nENV MALLOC_ARENA_MAX=2
 
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
