@@ -1,0 +1,5 @@
+fastapi==0.118.0
+uvicorn[standard]==0.37.0
+python-multipart==0.0.20
+yt-dlp>=2026.9.15
+audio-separator[cpu]==0.47.0
