@@ -17,7 +17,7 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 JOBS: Dict[str, dict] = {}
 LOCK = threading.Lock()
 
-app = FastAPI(title="Karaoke Studio AI", version="2.1")
+app = FastAPI(title="Karaoke Studio AI", version="2.2")
 
 
 class YoutubeRequest(BaseModel):
@@ -40,6 +40,11 @@ def job_dir(job_id: str) -> Path:
 def run(cmd, cwd=None):
     p = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if p.returncode != 0:
+        if p.returncode in (-9, 137):
+            raise RuntimeError(
+                "Audio separation ran out of cloud memory. "
+                "The low-memory worker could not complete this track."
+            )
         raise RuntimeError(p.stdout[-4000:])
     return p.stdout
 
@@ -98,15 +103,20 @@ def choose_instrumental(out_dir: Path) -> Path:
 
 def separate_karaoke(src: Path, out_dir: Path, keep_backing_vocals: bool) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
+    model_dir = APP_DIR / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
     model = "UVR_MDXNET_KARA_2.onnx" if keep_backing_vocals else "UVR-MDX-NET-Inst_HQ_3.onnx"
     run([
         "audio-separator", str(src),
-        "--model_filename", model,
+        "-m", model,
+        "--model_file_dir", str(model_dir),
         "--output_dir", str(out_dir),
         "--output_format", "WAV",
-        "--mdx_segment_size", "256",
+        "--single_stem", "Instrumental",
+        "--mdx_segment_size", "128",
         "--mdx_batch_size", "1",
-        "--mdx_overlap", "0.25",
+        "--mdx_overlap", "0.15",
+        "--log_level", "info",
     ])
     return choose_instrumental(out_dir)
 
@@ -189,7 +199,7 @@ def process_master(job_id: str, input_path: Path, preset: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "2.1", "youtube_js_runtime": "deno"}
+    return {"status": "ok", "version": "2.2", "youtube_js_runtime": "deno", "separator_mode": "low-memory"}
 
 
 @app.post("/jobs/youtube-mp3")
