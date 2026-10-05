@@ -52,7 +52,8 @@ public class MainActivity extends Activity {
 
     private Uri pendingAudio;
     private String pendingAction;
-    private OfflineAudioEngine.CancelToken cancelToken;
+    private OfflineAudioEngine.CancelToken offlineCancelToken;
+    private NeuralKaraokeEngine.CancelToken neuralCancelToken;
     private File currentResult;
 
     @Override
@@ -127,7 +128,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         titleParams.leftMargin = back ? dp(14) : 0;
         titleBox.addView(text("Karaoke Studio", 21, TEXT, true));
-        titleBox.addView(text("Offline Edition · v3", 13, GREEN, false));
+        titleBox.addView(text("Professional Offline AI · v3.1", 13, GREEN, false));
         bar.addView(titleBox, titleParams);
 
         Button settings = new Button(this);
@@ -151,7 +152,7 @@ public class MainActivity extends Activity {
         p.addView(hero);
 
         TextView desc = text(
-                "Karaoke and mastering now run on your phone. No Railway server, no cloud credits and no processing bill.",
+                "Professional vocal separation now runs on your phone with HT-Demucs AI. No Railway server, no cloud credits and no processing bill.",
                 16, MUTED, false);
         desc.setPadding(0, 0, 0, dp(22));
         p.addView(desc);
@@ -163,11 +164,11 @@ public class MainActivity extends Activity {
         addActionCard(p, "♫", "YouTube → MP3",
                 "Open Y2Mate in your browser for content you own or are authorized to download.", "yt_mp3");
         addActionCard(p, "🎤", "Upload → Karaoke",
-                "Choose a stereo song and reduce centred lead vocals entirely on-device.", "upload_karaoke");
+                "Use professional HT-Demucs AI to isolate and remove vocals on-device.", "upload_karaoke");
         addActionCard(p, "✦", "Master Audio",
                 "Apply a local compressor, gain stage and soft limiter with no upload.", "master");
 
-        TextView note = text("About v3 offline processing", 18, TEXT, true);
+        TextView note = text("Professional offline AI", 18, TEXT, true);
         note.setPadding(0, dp(22), 0, dp(9));
         p.addView(note);
 
@@ -177,7 +178,7 @@ public class MainActivity extends Activity {
         info.setBackground(rounded(CARD, 18));
         info.addView(text("Zero server cost", 15, GREEN, true));
         TextView body = text(
-                "This first offline engine uses stereo mid/side vocal reduction. It works best when the lead singer is mixed in the centre. A true neural Demucs/ONNX engine can be added next without reintroducing a paid server.",
+                "Karaoke uses a real HT-Demucs neural vocal-separation model through ONNX Runtime. The 166 MB AI model downloads once to your phone, then songs are processed locally.",
                 13, MUTED, false);
         body.setPadding(0, dp(5), 0, 0);
         info.addView(body);
@@ -197,8 +198,8 @@ public class MainActivity extends Activity {
         copy.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         cp.leftMargin = dp(10);
-        copy.addView(text("Offline engine ready", 14, TEXT, true));
-        copy.addView(text("Audio stays on this phone", 12, MUTED, false));
+        copy.addView(text(NeuralKaraokeEngine.isModelInstalled(this) ? "Professional AI ready" : "Professional AI model required", 14, TEXT, true));
+        copy.addView(text(NeuralKaraokeEngine.isModelInstalled(this) ? "HT-Demucs installed on this phone" : "One-time ~166 MB model download", 12, MUTED, false));
         status.addView(copy, cp);
 
         TextView free = text("FREE", 12, GREEN, true);
@@ -411,7 +412,7 @@ public class MainActivity extends Activity {
         LinearLayout p = page();
         addTopBar(p, true);
 
-        TextView h = text("Create offline karaoke", 27, TEXT, true);
+        TextView h = text("Create professional karaoke", 27, TEXT, true);
         h.setPadding(0, dp(8), 0, dp(4));
         p.addView(h);
 
@@ -419,19 +420,86 @@ public class MainActivity extends Activity {
         f.setPadding(0, 0, 0, dp(18));
         p.addView(f);
 
-        addInfoChip(p, "Best results: stereo music with the lead singer mixed near the centre. No file is uploaded.");
+        addInfoChip(p, "HT-Demucs AI isolates the vocal stem, then Karaoke Studio subtracts it from the original mix. Instruments keep their normal level far better than the old centre-cancel method.");
 
-        TextView warn = text(
-                "v3.0 uses fast mid/side vocal reduction, not the heavier neural separator yet. Some centred instruments may also be reduced.",
-                13, AMBER, false);
-        warn.setPadding(0, dp(14), 0, 0);
-        p.addView(warn);
+        if (!NeuralKaraokeEngine.isModelInstalled(this)) {
+            TextView model = text(
+                    "One-time setup: download the ~166 MB professional vocal model. It is stored on this phone and reused for every song.",
+                    13, AMBER, false);
+            model.setPadding(0, dp(14), 0, 0);
+            p.addView(model);
+        } else {
+            TextView model = text("Professional AI model installed ✓", 13, GREEN, true);
+            model.setPadding(0, dp(14), 0, 0);
+            p.addView(model);
+        }
 
-        Button go = primaryButton("Create locally");
+        TextView note = text(
+                "This model is designed for vocal removal/karaoke. It removes the vocal stem, so backing vocals may also be reduced when the AI classifies them as vocals.",
+                12, MUTED, false);
+        note.setPadding(0, dp(12), 0, 0);
+        p.addView(note);
+
+        Button go = primaryButton(NeuralKaraokeEngine.isModelInstalled(this)
+                ? "Create with professional AI"
+                : "Download AI model & create");
         LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
         gp.topMargin = dp(18);
         p.addView(go, gp);
-        go.setOnClickListener(v -> startOfflineProcessing(false));
+        go.setOnClickListener(v -> {
+            if (NeuralKaraokeEngine.isModelInstalled(this)) startNeuralKaraoke();
+            else confirmModelDownload();
+        });
+    }
+
+    private void confirmModelDownload() {
+        new AlertDialog.Builder(this)
+                .setTitle("Download professional AI model?")
+                .setMessage("Karaoke Studio will download the HT-Demucs vocal model once (~166 MB). There is no server processing fee. Wi-Fi is recommended. The model stays on your phone for future songs.")
+                .setPositiveButton("Download", (d, w) -> downloadAiModelThenProcess())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void downloadAiModelThenProcess() {
+        neuralCancelToken = new NeuralKaraokeEngine.CancelToken();
+        showProgress("Setting up professional AI", "Starting model download…");
+        executor.execute(() -> {
+            try {
+                NeuralKaraokeEngine.downloadModel(
+                        this,
+                        (stage, percent) -> updateProgress(stage, percent + "% · One-time model setup"),
+                        neuralCancelToken);
+                neuralCancelToken.check();
+                runOnUiThread(this::startNeuralKaraoke);
+            } catch (CancellationException e) {
+                runOnUiThread(this::showHome);
+            } catch (Exception e) {
+                showJobError(e);
+            }
+        });
+    }
+
+    private void startNeuralKaraoke() {
+        neuralCancelToken = new NeuralKaraokeEngine.CancelToken();
+        showProgress("Creating professional karaoke", "Preparing HT-Demucs AI…");
+        executor.execute(() -> {
+            try {
+                File result = NeuralKaraokeEngine.createKaraoke(
+                        this,
+                        pendingAudio,
+                        (stage, percent) -> updateProgress(stage, percent + "% · Professional AI on this phone"),
+                        neuralCancelToken);
+                currentResult = result;
+                runOnUiThread(() -> showLocalResult(result, false));
+            } catch (CancellationException e) {
+                runOnUiThread(this::showHome);
+            } catch (OutOfMemoryError oom) {
+                showJobError(new Exception("This phone ran out of memory while running HT-Demucs. Close other apps and retry."));
+            } catch (Exception e) {
+                showJobError(e);
+            }
+        });
     }
 
     private void confirmMaster() {
@@ -456,21 +524,18 @@ public class MainActivity extends Activity {
     }
 
     private void startOfflineProcessing(boolean master) {
-        cancelToken = new OfflineAudioEngine.CancelToken();
-        showProgress(master ? "Mastering locally" : "Creating karaoke locally",
-                master ? "Preparing decoder…" : "Preparing offline separator…");
+        offlineCancelToken = new OfflineAudioEngine.CancelToken();
+        showProgress("Mastering locally", "Preparing decoder…");
 
         executor.execute(() -> {
             try {
                 OfflineAudioEngine.Listener listener = (stage, percent) ->
                         updateProgress(stage, percent + "% · Processing on this phone");
 
-                File result = master
-                        ? OfflineAudioEngine.master(this, pendingAudio, listener, cancelToken)
-                        : OfflineAudioEngine.createKaraoke(this, pendingAudio, listener, cancelToken);
+                File result = OfflineAudioEngine.master(this, pendingAudio, listener, offlineCancelToken);
 
                 currentResult = result;
-                runOnUiThread(() -> showLocalResult(result, master));
+                runOnUiThread(() -> showLocalResult(result, true));
             } catch (CancellationException e) {
                 runOnUiThread(this::showHome);
             } catch (Exception e) {
@@ -522,7 +587,8 @@ public class MainActivity extends Activity {
             cp.topMargin = dp(16);
             p.addView(cancel, cp);
             cancel.setOnClickListener(v -> {
-                if (cancelToken != null) cancelToken.cancel();
+                if (offlineCancelToken != null) offlineCancelToken.cancel();
+                if (neuralCancelToken != null) neuralCancelToken.cancel();
                 cancel.setEnabled(false);
                 cancel.setText("Cancelling…");
             });
@@ -556,7 +622,9 @@ public class MainActivity extends Activity {
         n.setPadding(0, dp(6), 0, dp(24));
         p.addView(n);
 
-        addInfoChip(p, "Created locally. Nothing was uploaded to Railway or any processing server.");
+        addInfoChip(p, master
+                ? "Mastered locally. Nothing was uploaded to Railway."
+                : "Separated locally with HT-Demucs AI. Nothing was uploaded to Railway.");
 
         Button save = primaryButton("Save WAV to Downloads");
         LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
@@ -639,8 +707,10 @@ public class MainActivity extends Activity {
 
         addInfoChip(p, "Processing cost: ₹0 server charge");
         addInfoChip(p, "Cloud backend: Not used");
-        addInfoChip(p, "Current engine: Stereo mid/side vocal reduction + local WAV mastering");
-        addInfoChip(p, "Planned upgrade path: on-device neural Demucs/ONNX separation");
+        addInfoChip(p, "Karaoke engine: HT-Demucs neural vocal separation via ONNX Runtime");
+        addInfoChip(p, NeuralKaraokeEngine.isModelInstalled(this)
+                ? "Professional model: Installed"
+                : "Professional model: One-time ~166 MB download required");
 
         TextView body = text(
                 "The phone does the work, so processing time and battery use depend on the device. Y2Mate remains an external browser handoff only.",
@@ -672,7 +742,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (cancelToken != null) cancelToken.cancel();
+        if (offlineCancelToken != null) offlineCancelToken.cancel();
+        if (neuralCancelToken != null) neuralCancelToken.cancel();
         executor.shutdownNow();
         super.onDestroy();
     }
