@@ -2,18 +2,18 @@ package com.seekgodtakeall.karaokestudio;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.DownloadManager;
-import android.content.Context;
-import android.content.ClipboardManager;
 import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.ContentValues;
+import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.view.Gravity;
 import android.view.View;
@@ -24,31 +24,21 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
-import android.widget.Space;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONObject;
-
-import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
-import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
     private static final int PICK_AUDIO = 4401;
-    private static final String PREFS = "karaoke_studio_v2";
-    private static final String KEY_API = "api_base";
-    private static final String DEFAULT_API = "https://karaoke-studio-backend-production.up.railway.app";
     private static final String CONVERTER_URL = "https://y2mate.gs/";
+
     private static final int BG = Color.rgb(8, 11, 20);
     private static final int CARD = Color.rgb(20, 25, 40);
     private static final int CARD_ALT = Color.rgb(27, 33, 51);
@@ -56,13 +46,14 @@ public class MainActivity extends Activity {
     private static final int MUTED = Color.rgb(166, 175, 194);
     private static final int ACCENT = Color.rgb(139, 124, 255);
     private static final int GREEN = Color.rgb(83, 211, 158);
+    private static final int AMBER = Color.rgb(241, 185, 92);
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private SharedPreferences prefs;
-    private LinearLayout root;
+
     private Uri pendingAudio;
     private String pendingAction;
-    private String activeJobId;
+    private OfflineAudioEngine.CancelToken cancelToken;
+    private File currentResult;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -70,7 +61,6 @@ public class MainActivity extends Activity {
         Window w = getWindow();
         w.setStatusBarColor(BG);
         w.setNavigationBarColor(BG);
-        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         showHome();
     }
 
@@ -112,7 +102,6 @@ public class MainActivity extends Activity {
         scroll.addView(content, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         setContentView(scroll);
-        root = content;
         return content;
     }
 
@@ -129,8 +118,6 @@ public class MainActivity extends Activity {
             b.setTextColor(TEXT);
             b.setBackground(rounded(CARD_ALT, 14));
             b.setContentDescription("Back");
-            b.setMinWidth(dp(48));
-            b.setMinHeight(dp(48));
             b.setOnClickListener(v -> showHome());
             bar.addView(b, new LinearLayout.LayoutParams(dp(48), dp(48)));
         }
@@ -139,10 +126,8 @@ public class MainActivity extends Activity {
         titleBox.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         titleParams.leftMargin = back ? dp(14) : 0;
-        TextView name = text("Karaoke Studio AI", 21, TEXT, true);
-        TextView sub = text("Create. Separate. Master.", 13, MUTED, false);
-        titleBox.addView(name);
-        titleBox.addView(sub);
+        titleBox.addView(text("Karaoke Studio", 21, TEXT, true));
+        titleBox.addView(text("Offline Edition · v3", 13, GREEN, false));
         bar.addView(titleBox, titleParams);
 
         Button settings = new Button(this);
@@ -150,10 +135,8 @@ public class MainActivity extends Activity {
         settings.setTextSize(18);
         settings.setTextColor(TEXT);
         settings.setBackground(rounded(CARD_ALT, 14));
-        settings.setContentDescription("Settings");
-        settings.setMinWidth(dp(48));
-        settings.setMinHeight(dp(48));
-        settings.setOnClickListener(v -> showSettings());
+        settings.setContentDescription("About offline mode");
+        settings.setOnClickListener(v -> showOfflineInfo());
         bar.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(48)));
 
         parent.addView(bar);
@@ -163,35 +146,70 @@ public class MainActivity extends Activity {
         LinearLayout p = page();
         addTopBar(p, false);
 
-        TextView hero = text("Your mobile audio studio", 30, TEXT, true);
+        TextView hero = text("Your zero-cost mobile audio studio", 29, TEXT, true);
         hero.setPadding(0, dp(10), 0, dp(8));
         p.addView(hero);
 
-        TextView desc = text("Turn authorized video links or your own audio into karaoke tracks, clean MP3s and mastered mixes — without a desktop.", 16, MUTED, false);
-        desc.setPadding(0, 0, 0, dp(24));
+        TextView desc = text(
+                "Karaoke and mastering now run on your phone. No Railway server, no cloud credits and no processing bill.",
+                16, MUTED, false);
+        desc.setPadding(0, 0, 0, dp(22));
         p.addView(desc);
 
-        addActionCard(p, "▶", "YouTube → Karaoke", "Open the converter, download your authorized MP3, then import it for AI vocal removal.", "yt_karaoke");
-        addActionCard(p, "♫", "YouTube → MP3", "Open the converter in your browser for content you own or are authorized to process.", "yt_mp3");
-        addActionCard(p, "🎤", "Upload → Karaoke", "Choose an audio file from your phone and create a karaoke version.", "upload_karaoke");
-        addActionCard(p, "✦", "Master Audio", "Enhance loudness, clarity and polish with mastering presets.", "master");
+        addStatusCard(p);
 
-        TextView recent = text("Recent projects", 18, TEXT, true);
-        recent.setPadding(0, dp(26), 0, dp(10));
-        p.addView(recent);
+        addActionCard(p, "▶", "YouTube → Karaoke",
+                "Open Y2Mate for authorized audio, then import the MP3 and process it locally.", "yt_karaoke");
+        addActionCard(p, "♫", "YouTube → MP3",
+                "Open Y2Mate in your browser for content you own or are authorized to download.", "yt_mp3");
+        addActionCard(p, "🎤", "Upload → Karaoke",
+                "Choose a stereo song and reduce centred lead vocals entirely on-device.", "upload_karaoke");
+        addActionCard(p, "✦", "Master Audio",
+                "Apply a local compressor, gain stage and soft limiter with no upload.", "master");
 
-        LinearLayout empty = new LinearLayout(this);
-        empty.setOrientation(LinearLayout.VERTICAL);
-        empty.setPadding(dp(16), dp(16), dp(16), dp(16));
-        empty.setBackground(rounded(CARD, 18));
-        TextView e1 = text("No projects yet", 15, TEXT, true);
-        TextView e2 = text("Your completed tracks will appear here in a future update.", 13, MUTED, false);
-        e2.setPadding(0, dp(4), 0, 0);
-        empty.addView(e1);
-        empty.addView(e2);
-        p.addView(empty);
+        TextView note = text("About v3 offline processing", 18, TEXT, true);
+        note.setPadding(0, dp(22), 0, dp(9));
+        p.addView(note);
 
-        addServiceStatus(p);
+        LinearLayout info = new LinearLayout(this);
+        info.setOrientation(LinearLayout.VERTICAL);
+        info.setPadding(dp(16), dp(15), dp(16), dp(15));
+        info.setBackground(rounded(CARD, 18));
+        info.addView(text("Zero server cost", 15, GREEN, true));
+        TextView body = text(
+                "This first offline engine uses stereo mid/side vocal reduction. It works best when the lead singer is mixed in the centre. A true neural Demucs/ONNX engine can be added next without reintroducing a paid server.",
+                13, MUTED, false);
+        body.setPadding(0, dp(5), 0, 0);
+        info.addView(body);
+        p.addView(info);
+    }
+
+    private void addStatusCard(LinearLayout parent) {
+        LinearLayout status = new LinearLayout(this);
+        status.setGravity(Gravity.CENTER_VERTICAL);
+        status.setPadding(dp(14), dp(12), dp(14), dp(12));
+        status.setBackground(outlined(CARD, Color.rgb(45, 76, 70), 16));
+
+        TextView dot = text("●", 16, GREEN, false);
+        status.addView(dot);
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        cp.leftMargin = dp(10);
+        copy.addView(text("Offline engine ready", 14, TEXT, true));
+        copy.addView(text("Audio stays on this phone", 12, MUTED, false));
+        status.addView(copy, cp);
+
+        TextView free = text("FREE", 12, GREEN, true);
+        free.setPadding(dp(10), dp(7), dp(10), dp(7));
+        free.setBackground(rounded(Color.rgb(22, 51, 45), 12));
+        status.addView(free);
+
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(18);
+        parent.addView(status, lp);
     }
 
     private void addActionCard(LinearLayout parent, String icon, String title, String subtitle, String action) {
@@ -202,7 +220,6 @@ public class MainActivity extends Activity {
         card.setBackground(rounded(CARD, 20));
         card.setClickable(true);
         card.setFocusable(true);
-        card.setContentDescription(title + ". " + subtitle);
         card.setMinimumHeight(dp(88));
 
         TextView i = text(icon, 25, TEXT, false);
@@ -220,123 +237,19 @@ public class MainActivity extends Activity {
         copy.addView(t);
         copy.addView(s);
         card.addView(copy, cp);
-
-        TextView arrow = text("›", 28, MUTED, false);
-        card.addView(arrow);
+        card.addView(text("›", 28, MUTED, false));
 
         card.setOnClickListener(v -> {
             if ("yt_karaoke".equals(action)) showYoutubeScreen(true);
             else if ("yt_mp3".equals(action)) showYoutubeScreen(false);
-            else if ("upload_karaoke".equals(action)) chooseAudio("upload_karaoke");
-            else if ("master".equals(action)) chooseAudio("master");
+            else if ("upload_karaoke".equals(action)) chooseAudio("offline_karaoke");
+            else if ("master".equals(action)) chooseAudio("offline_master");
         });
 
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.bottomMargin = dp(12);
         parent.addView(card, lp);
-    }
-
-    private void addServiceStatus(LinearLayout parent) {
-        TextView label = text("Cloud service", 14, MUTED, true);
-        label.setPadding(0, dp(24), 0, dp(8));
-        parent.addView(label);
-
-        LinearLayout status = new LinearLayout(this);
-        status.setGravity(Gravity.CENTER_VERTICAL);
-        status.setPadding(dp(14), dp(12), dp(14), dp(12));
-        status.setBackground(rounded(CARD, 16));
-
-        TextView dot = text("●", 16, isConfigured() ? GREEN : Color.rgb(232, 164, 76), false);
-        status.addView(dot);
-        TextView copy = text(isConfigured() ? "Configured" : "Setup required", 14, TEXT, true);
-        LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        cp.leftMargin = dp(10);
-        status.addView(copy, cp);
-
-        Button test = new Button(this);
-        test.setText(isConfigured() ? "Test" : "Setup");
-        test.setTextColor(TEXT);
-        test.setTextSize(13);
-        test.setAllCaps(false);
-        test.setBackground(rounded(CARD_ALT, 14));
-        test.setMinHeight(dp(44));
-        test.setOnClickListener(v -> {
-            if (isConfigured()) testService();
-            else showSettings();
-        });
-        status.addView(test);
-        parent.addView(status);
-    }
-
-    private void showConfigureFirstDialog() {
-        new AlertDialog.Builder(this)
-                .setTitle("Cloud service setup")
-                .setMessage("This standalone mobile version uses its own cloud processing service, not your desktop. Add the API address once in Settings, then the app works independently.")
-                .setPositiveButton("Open Settings", (d, w) -> showSettings())
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private boolean isConfigured() {
-        return apiBase().startsWith("http");
-    }
-
-    private String apiBase() {
-        String value = prefs.getString(KEY_API, DEFAULT_API);
-        if (value == null || value.trim().isEmpty()) value = DEFAULT_API;
-        value = value.trim();
-        while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
-        return value;
-    }
-
-    private void showSettings() {
-        LinearLayout p = page();
-        addTopBar(p, true);
-
-        TextView h = text("Settings", 28, TEXT, true);
-        h.setPadding(0, dp(8), 0, dp(6));
-        p.addView(h);
-
-        TextView d = text("The production cloud service is built into the app. Change this address only if you are testing another backend.", 15, MUTED, false);
-        d.setPadding(0, 0, 0, dp(20));
-        p.addView(d);
-
-        TextView lab = text("Cloud API address", 14, TEXT, true);
-        lab.setPadding(0, 0, 0, dp(8));
-        p.addView(lab);
-
-        EditText input = new EditText(this);
-        input.setText(apiBase());
-        input.setHint("https://your-karaoke-api.example.com");
-        input.setHintTextColor(Color.rgb(108, 117, 136));
-        input.setTextColor(TEXT);
-        input.setTextSize(16);
-        input.setSingleLine(true);
-        input.setPadding(dp(14), dp(14), dp(14), dp(14));
-        input.setBackground(outlined(CARD, Color.rgb(58, 67, 88), 14));
-        p.addView(input, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
-
-        Button save = primaryButton("Save & test connection");
-        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
-        sp.topMargin = dp(16);
-        p.addView(save, sp);
-        save.setOnClickListener(v -> {
-            String value = input.getText().toString().trim();
-            if (!value.startsWith("http://") && !value.startsWith("https://")) {
-                input.setError("Enter a full http:// or https:// address");
-                return;
-            }
-            while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
-            prefs.edit().putString(KEY_API, value).apply();
-            testService();
-        });
-
-        TextView note = text("For production, this address will be built into the APK so normal users will never see this setting.", 13, MUTED, false);
-        note.setPadding(0, dp(18), 0, 0);
-        p.addView(note);
     }
 
     private Button primaryButton(String label) {
@@ -351,28 +264,6 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private void testService() {
-        if (!isConfigured()) return;
-        Toast.makeText(this, "Testing cloud service…", Toast.LENGTH_SHORT).show();
-        executor.execute(() -> {
-            try {
-                JSONObject result = getJson(apiBase() + "/health");
-                boolean ok = "ok".equalsIgnoreCase(result.optString("status"));
-                runOnUiThread(() -> new AlertDialog.Builder(this)
-                        .setTitle(ok ? "Connected" : "Service responded")
-                        .setMessage(ok ? "Karaoke Studio cloud processing is ready." : result.toString())
-                        .setPositiveButton("OK", (d, w) -> showHome())
-                        .show());
-            } catch (Exception e) {
-                runOnUiThread(() -> new AlertDialog.Builder(this)
-                        .setTitle("Connection failed")
-                        .setMessage("Could not reach the cloud service.\n\n" + friendlyError(e))
-                        .setPositiveButton("OK", null)
-                        .show());
-            }
-        });
-    }
-
     private void showYoutubeScreen(boolean karaoke) {
         LinearLayout p = page();
         addTopBar(p, true);
@@ -382,8 +273,8 @@ public class MainActivity extends Activity {
         p.addView(h);
 
         TextView d = text(karaoke
-                ? "Paste a YouTube link for content you own or are authorized to process. We'll open the converter in your browser. After the MP3 downloads, return here and import it for karaoke processing."
-                : "Paste a YouTube link for content you own or are authorized to process. We'll open the converter in your browser and copy the link for you.",
+                        ? "Paste a YouTube link for content you own or are authorized to process. The converter opens in your browser. After downloading the MP3, return here and import it."
+                        : "Paste a YouTube link for content you own or are authorized to download. The converter opens in your browser.",
                 15, MUTED, false);
         d.setPadding(0, 0, 0, dp(20));
         p.addView(d);
@@ -400,16 +291,14 @@ public class MainActivity extends Activity {
         url.setSingleLine(true);
         url.setPadding(dp(14), dp(14), dp(14), dp(14));
         url.setBackground(outlined(CARD, Color.rgb(58, 67, 88), 14));
-        p.addView(url, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
+        p.addView(url, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
 
         addInfoChip(p, karaoke
-                ? "Step 1: Open converter and download MP3. Step 2: Return here and import the downloaded MP3. Step 3: Our cloud AI removes the lead vocal."
-                : "The conversion happens in your browser. Karaoke Studio does not send your YouTube link through the Railway server.");
+                ? "1. Open Y2Mate · 2. Download MP3 · 3. Return here · 4. Import MP3 · 5. Offline karaoke processing"
+                : "The MP3 conversion is handled in your normal browser; Karaoke Studio itself does not scrape YouTube.");
 
-        Button open = primaryButton("Open converter");
-        LinearLayout.LayoutParams op = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+        Button open = primaryButton("Open Y2Mate");
+        LinearLayout.LayoutParams op = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
         op.topMargin = dp(18);
         p.addView(open, op);
         open.setOnClickListener(v -> {
@@ -429,16 +318,27 @@ public class MainActivity extends Activity {
             importMp3.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             importMp3.setAllCaps(false);
             importMp3.setBackground(outlined(CARD_ALT, ACCENT, 16));
-            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
             ip.topMargin = dp(12);
             p.addView(importMp3, ip);
-            importMp3.setOnClickListener(v -> chooseAudio("youtube_import_karaoke"));
+            importMp3.setOnClickListener(v -> chooseAudio("offline_karaoke"));
         }
 
-        TextView privacy = text("The converter opens in your normal browser, not inside the app. Only use media you have permission to download or process.", 12, MUTED, false);
-        privacy.setPadding(0, dp(16), 0, 0);
-        p.addView(privacy);
+        TextView legal = text(
+                "Only download or process media when you have the necessary rights or permission.",
+                12, MUTED, false);
+        legal.setPadding(0, dp(16), 0, 0);
+        p.addView(legal);
+    }
+
+    private void addInfoChip(LinearLayout parent, String copy) {
+        TextView chip = text(copy, 13, MUTED, false);
+        chip.setPadding(dp(14), dp(12), dp(14), dp(12));
+        chip.setBackground(rounded(CARD, 14));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(14);
+        parent.addView(chip, lp);
     }
 
     private boolean isYoutubeUrl(String value) {
@@ -459,9 +359,10 @@ public class MainActivity extends Activity {
             if (clipboard != null) {
                 clipboard.setPrimaryClip(ClipData.newPlainText("YouTube link", youtubeUrl));
             }
-            Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(CONVERTER_URL));
-            startActivity(browser);
-            Toast.makeText(this, "YouTube link copied. Paste it into the converter, download MP3, then return to Karaoke Studio.", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(CONVERTER_URL)));
+            Toast.makeText(this,
+                    "Link copied. Paste it in Y2Mate, download the MP3, then return to Karaoke Studio.",
+                    Toast.LENGTH_LONG).show();
         } catch (Exception e) {
             new AlertDialog.Builder(this)
                     .setTitle("Could not open browser")
@@ -469,16 +370,6 @@ public class MainActivity extends Activity {
                     .setPositiveButton("OK", null)
                     .show();
         }
-    }
-
-    private void addInfoChip(LinearLayout parent, String copy) {
-        TextView chip = text(copy, 13, MUTED, false);
-        chip.setPadding(dp(14), dp(12), dp(14), dp(12));
-        chip.setBackground(rounded(CARD, 14));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(14);
-        parent.addView(chip, lp);
     }
 
     private void chooseAudio(String action) {
@@ -494,14 +385,14 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == PICK_AUDIO && resultCode == RESULT_OK && data != null && data.getData() != null) {
             pendingAudio = data.getData();
-            try { getContentResolver().takePersistableUriPermission(pendingAudio, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
-            catch (Exception ignored) {}
-            if ("master".equals(pendingAction)) {
-                showMasterOptions();
-            } else if ("youtube_import_karaoke".equals(pendingAction)) {
-                startUploadJob("/jobs/upload-karaoke", "Creating karaoke");
+            try {
+                getContentResolver().takePersistableUriPermission(pendingAudio, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) {}
+
+            if ("offline_master".equals(pendingAction)) {
+                confirmMaster();
             } else {
-                showUploadKaraokeOptions();
+                confirmKaraoke();
             }
         }
     }
@@ -516,100 +407,72 @@ public class MainActivity extends Activity {
         return "audio";
     }
 
-    private void showUploadKaraokeOptions() {
+    private void confirmKaraoke() {
         LinearLayout p = page();
         addTopBar(p, true);
 
-        TextView h = text("Create karaoke", 27, TEXT, true);
+        TextView h = text("Create offline karaoke", 27, TEXT, true);
         h.setPadding(0, dp(8), 0, dp(4));
         p.addView(h);
-        TextView f = text(fileName(pendingAudio), 14, MUTED, false);
-        f.setPadding(0, 0, 0, dp(20));
-        p.addView(f);
 
-        addInfoChip(p, "Lead vocal removal · music retained · backing vocals preserved when possible");
-
-        Button go = primaryButton("Create karaoke track");
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
-        lp.topMargin = dp(18);
-        p.addView(go, lp);
-        go.setOnClickListener(v -> startUploadJob("/jobs/upload-karaoke", "Creating karaoke"));
-    }
-
-    private void showMasterOptions() {
-        LinearLayout p = page();
-        addTopBar(p, true);
-
-        TextView h = text("Master Audio", 27, TEXT, true);
-        h.setPadding(0, dp(8), 0, dp(4));
-        p.addView(h);
         TextView f = text(fileName(pendingAudio), 14, MUTED, false);
         f.setPadding(0, 0, 0, dp(18));
         p.addView(f);
 
-        TextView presets = text("Mastering preset", 15, TEXT, true);
-        presets.setPadding(0, 0, 0, dp(10));
-        p.addView(presets);
+        addInfoChip(p, "Best results: stereo music with the lead singer mixed near the centre. No file is uploaded.");
 
-        final String[] selected = {"streaming"};
-        addPreset(p, "Streaming", "Balanced clarity and loudness for online playback.", "streaming", selected);
-        addPreset(p, "Warm", "Smoother highs and fuller low-mids.", "warm", selected);
-        addPreset(p, "Punchy", "More impact and presence for energetic music.", "punchy", selected);
-        addPreset(p, "Clean", "Gentle correction and transparent loudness control.", "clean", selected);
+        TextView warn = text(
+                "v3.0 uses fast mid/side vocal reduction, not the heavier neural separator yet. Some centred instruments may also be reduced.",
+                13, AMBER, false);
+        warn.setPadding(0, dp(14), 0, 0);
+        p.addView(warn);
 
-        Button go = primaryButton("Master audio");
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
-        lp.topMargin = dp(18);
-        p.addView(go, lp);
-        go.setOnClickListener(v -> startUploadJob("/jobs/master?preset=" + selected[0], "Mastering audio"));
+        Button go = primaryButton("Create locally");
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+        gp.topMargin = dp(18);
+        p.addView(go, gp);
+        go.setOnClickListener(v -> startOfflineProcessing(false));
     }
 
-    private void addPreset(LinearLayout parent, String title, String subtitle, String value, String[] selected) {
-        Button b = new Button(this);
-        b.setAllCaps(false);
-        b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        b.setText(title + "\n" + subtitle);
-        b.setTextSize(14);
-        b.setTextColor(TEXT);
-        b.setPadding(dp(14), dp(10), dp(14), dp(10));
-        b.setBackground(outlined(CARD, "streaming".equals(value) ? ACCENT : Color.rgb(58,67,88), 14));
-        b.setContentDescription(title + ". " + subtitle);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(70));
-        lp.bottomMargin = dp(10);
-        parent.addView(b, lp);
-        b.setOnClickListener(v -> {
-            selected[0] = value;
-            Toast.makeText(this, title + " selected", Toast.LENGTH_SHORT).show();
-        });
+    private void confirmMaster() {
+        LinearLayout p = page();
+        addTopBar(p, true);
+
+        TextView h = text("Master Audio Offline", 27, TEXT, true);
+        h.setPadding(0, dp(8), 0, dp(4));
+        p.addView(h);
+
+        TextView f = text(fileName(pendingAudio), 14, MUTED, false);
+        f.setPadding(0, 0, 0, dp(18));
+        p.addView(f);
+
+        addInfoChip(p, "Local compression + make-up gain + soft limiter. Output is a 16-bit WAV.");
+
+        Button go = primaryButton("Master locally");
+        LinearLayout.LayoutParams gp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+        gp.topMargin = dp(18);
+        p.addView(go, gp);
+        go.setOnClickListener(v -> startOfflineProcessing(true));
     }
 
-    private void startYoutubeJob(String url, boolean karaoke) {
-        showProgress(karaoke ? "Creating karaoke" : "Creating MP3", "Preparing request…");
+    private void startOfflineProcessing(boolean master) {
+        cancelToken = new OfflineAudioEngine.CancelToken();
+        showProgress(master ? "Mastering locally" : "Creating karaoke locally",
+                master ? "Preparing decoder…" : "Preparing offline separator…");
+
         executor.execute(() -> {
             try {
-                JSONObject body = new JSONObject();
-                body.put("url", url);
-                body.put("master", karaoke);
-                body.put("keep_backing_vocals", true);
-                JSONObject response = postJson(apiBase() + (karaoke ? "/jobs/youtube-karaoke" : "/jobs/youtube-mp3"), body);
-                activeJobId = response.getString("job_id");
-                pollJob(activeJobId);
-            } catch (Exception e) {
-                showJobError(e);
-            }
-        });
-    }
+                OfflineAudioEngine.Listener listener = (stage, percent) ->
+                        updateProgress(stage, percent + "% · Processing on this phone");
 
-    private void startUploadJob(String path, String title) {
-        showProgress(title, "Uploading audio…");
-        executor.execute(() -> {
-            try {
-                JSONObject response = postMultipart(apiBase() + path, pendingAudio);
-                activeJobId = response.getString("job_id");
-                pollJob(activeJobId);
+                File result = master
+                        ? OfflineAudioEngine.master(this, pendingAudio, listener, cancelToken)
+                        : OfflineAudioEngine.createKaraoke(this, pendingAudio, listener, cancelToken);
+
+                currentResult = result;
+                runOnUiThread(() -> showLocalResult(result, master));
+            } catch (CancellationException e) {
+                runOnUiThread(this::showHome);
             } catch (Exception e) {
                 showJobError(e);
             }
@@ -640,7 +503,9 @@ public class MainActivity extends Activity {
             s.setPadding(0, dp(18), 0, dp(8));
             card.addView(s);
 
-            TextView detail = text("You can leave this screen; the cloud worker keeps processing the job.", 13, MUTED, false);
+            TextView detail = text(
+                    "Keep Karaoke Studio open while processing. No cloud service is being used.",
+                    13, MUTED, false);
             detail.setId(1002);
             detail.setGravity(Gravity.CENTER);
             card.addView(detail);
@@ -653,11 +518,14 @@ public class MainActivity extends Activity {
             cancel.setTextSize(15);
             cancel.setAllCaps(false);
             cancel.setBackground(rounded(CARD_ALT, 16));
-            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
             cp.topMargin = dp(16);
             p.addView(cancel, cp);
-            cancel.setOnClickListener(v -> cancelJob());
+            cancel.setOnClickListener(v -> {
+                if (cancelToken != null) cancelToken.cancel();
+                cancel.setEnabled(false);
+                cancel.setText("Cancelling…");
+            });
         });
     }
 
@@ -670,53 +538,7 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void pollJob(String jobId) {
-        int ticks = 0;
-        try {
-            while (ticks < 3600) {
-                JSONObject j = getJson(apiBase() + "/jobs/" + jobId);
-                String status = j.optString("status", "processing");
-                String stage = j.optString("stage", "Processing audio…");
-                String detail = j.optString("detail", "Cloud processing is active.");
-                updateProgress(stage, detail);
-
-                if ("completed".equals(status)) {
-                    String download = j.optString("download_url", apiBase() + "/jobs/" + jobId + "/download");
-                    String name = j.optString("filename", "KaraokeStudio-result.mp3");
-                    runOnUiThread(() -> showResult(download, name));
-                    return;
-                }
-                if ("failed".equals(status)) {
-                    throw new Exception(j.optString("error", "Processing failed"));
-                }
-                if ("cancelled".equals(status)) {
-                    runOnUiThread(this::showHome);
-                    return;
-                }
-                Thread.sleep(2000);
-                ticks++;
-            }
-            throw new Exception("Processing timed out.");
-        } catch (Exception e) {
-            showJobError(e);
-        }
-    }
-
-    private void cancelJob() {
-        if (activeJobId == null) {
-            showHome();
-            return;
-        }
-        executor.execute(() -> {
-            try {
-                postJson(apiBase() + "/jobs/" + activeJobId + "/cancel", new JSONObject());
-            } catch (Exception ignored) {}
-            activeJobId = null;
-            runOnUiThread(this::showHome);
-        });
-    }
-
-    private void showResult(String downloadUrl, String filename) {
+    private void showLocalResult(File result, boolean master) {
         LinearLayout p = page();
         addTopBar(p, true);
 
@@ -725,19 +547,22 @@ public class MainActivity extends Activity {
         tick.setPadding(0, dp(24), 0, dp(8));
         p.addView(tick);
 
-        TextView h = text("Track ready", 28, TEXT, true);
+        TextView h = text(master ? "Master ready" : "Karaoke ready", 28, TEXT, true);
         h.setGravity(Gravity.CENTER);
         p.addView(h);
 
-        TextView n = text(filename, 14, MUTED, false);
+        TextView n = text(result.getName(), 14, MUTED, false);
         n.setGravity(Gravity.CENTER);
         n.setPadding(0, dp(6), 0, dp(24));
         p.addView(n);
 
-        Button save = primaryButton("Save to Downloads");
-        p.addView(save, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(56)));
-        save.setOnClickListener(v -> downloadFile(downloadUrl, filename));
+        addInfoChip(p, "Created locally. Nothing was uploaded to Railway or any processing server.");
+
+        Button save = primaryButton("Save WAV to Downloads");
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56));
+        sp.topMargin = dp(16);
+        p.addView(save, sp);
+        save.setOnClickListener(v -> saveToDownloads(result));
 
         Button home = new Button(this);
         home.setText("Back to home");
@@ -745,105 +570,99 @@ public class MainActivity extends Activity {
         home.setTextSize(15);
         home.setAllCaps(false);
         home.setBackground(rounded(CARD_ALT, 16));
-        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
         hp.topMargin = dp(12);
         p.addView(home, hp);
         home.setOnClickListener(v -> showHome());
     }
 
-    private void downloadFile(String url, String filename) {
+    private void saveToDownloads(File source) {
+        executor.execute(() -> {
+            Uri target = null;
+            try {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, source.getName());
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Karaoke Studio");
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+                target = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (target == null) throw new IllegalStateException("Could not create the Downloads file.");
+
+                try (InputStream in = new FileInputStream(source);
+                     OutputStream out = getContentResolver().openOutputStream(target)) {
+                    if (out == null) throw new IllegalStateException("Could not open Downloads storage.");
+                    byte[] buffer = new byte[128 * 1024];
+                    int n;
+                    while ((n = in.read(buffer)) >= 0) out.write(buffer, 0, n);
+                }
+
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                getContentResolver().update(target, done, null, null);
+
+                Uri finalTarget = target;
+                runOnUiThread(() -> new AlertDialog.Builder(this)
+                        .setTitle("Saved")
+                        .setMessage("Saved to Downloads/Karaoke Studio.\n\n" + source.getName())
+                        .setPositiveButton("OK", null)
+                        .setNeutralButton("Share", (d, w) -> shareSaved(finalTarget))
+                        .show());
+            } catch (Exception e) {
+                if (target != null) {
+                    try { getContentResolver().delete(target, null, null); } catch (Exception ignored) {}
+                }
+                showJobError(e);
+            }
+        });
+    }
+
+    private void shareSaved(Uri uri) {
         try {
-            Uri u = Uri.parse(url.startsWith("http") ? url : apiBase() + url);
-            DownloadManager.Request r = new DownloadManager.Request(u);
-            r.setTitle(filename);
-            r.setDescription("Saving audio from Karaoke Studio");
-            r.setMimeType("audio/mpeg");
-            r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            r.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, filename);
-            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            dm.enqueue(r);
-            Toast.makeText(this, "Saving to Downloads…", Toast.LENGTH_SHORT).show();
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType("audio/wav");
+            share.putExtra(Intent.EXTRA_STREAM, uri);
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share, "Share audio"));
         } catch (Exception e) {
-            Toast.makeText(this, "Download failed: " + friendlyError(e), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Could not open share menu.", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    private void showOfflineInfo() {
+        LinearLayout p = page();
+        addTopBar(p, true);
+
+        TextView h = text("Offline Edition", 28, TEXT, true);
+        h.setPadding(0, dp(8), 0, dp(10));
+        p.addView(h);
+
+        addInfoChip(p, "Processing cost: ₹0 server charge");
+        addInfoChip(p, "Cloud backend: Not used");
+        addInfoChip(p, "Current engine: Stereo mid/side vocal reduction + local WAV mastering");
+        addInfoChip(p, "Planned upgrade path: on-device neural Demucs/ONNX separation");
+
+        TextView body = text(
+                "The phone does the work, so processing time and battery use depend on the device. Y2Mate remains an external browser handoff only.",
+                14, MUTED, false);
+        body.setPadding(0, dp(18), 0, 0);
+        p.addView(body);
     }
 
     private void showJobError(Exception e) {
         runOnUiThread(() -> new AlertDialog.Builder(this)
                 .setTitle("Could not finish the job")
                 .setMessage(friendlyError(e))
-                .setPositiveButton("Try again", (d, w) -> showHome())
+                .setPositiveButton("OK", null)
+                .setNegativeButton("Home", (d, w) -> showHome())
                 .show());
     }
 
     private String friendlyError(Exception e) {
         String m = e.getMessage();
-        return (m == null || m.trim().isEmpty()) ? "Unknown network or processing error." : m;
-    }
-
-    private JSONObject getJson(String url) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
-        c.setRequestMethod("GET");
-        return readJson(c);
-    }
-
-    private JSONObject postJson(String url, JSONObject body) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
-        c.setRequestMethod("POST");
-        c.setDoOutput(true);
-        c.setRequestProperty("Content-Type", "application/json");
-        byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
-        try (OutputStream out = c.getOutputStream()) { out.write(bytes); }
-        return readJson(c);
-    }
-
-    private JSONObject postMultipart(String url, Uri uri) throws Exception {
-        String boundary = "----KaraokeStudio" + UUID.randomUUID();
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(20000);
-        c.setReadTimeout(60000);
-        c.setRequestMethod("POST");
-        c.setDoOutput(true);
-        c.setChunkedStreamingMode(1024 * 128);
-        c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-
-        String name = fileName(uri);
-        try (DataOutputStream out = new DataOutputStream(c.getOutputStream());
-             InputStream in = getContentResolver().openInputStream(uri)) {
-            out.writeBytes("--" + boundary + "\r\n");
-            out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"" + name.replace("\"", "") + "\"\r\n");
-            out.writeBytes("Content-Type: application/octet-stream\r\n\r\n");
-            byte[] buf = new byte[128 * 1024];
-            int n;
-            while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
-            out.writeBytes("\r\n--" + boundary + "--\r\n");
-        }
-        return readJson(c);
-    }
-
-    private JSONObject readJson(HttpURLConnection c) throws Exception {
-        int code = c.getResponseCode();
-        InputStream in = code >= 200 && code < 300 ? c.getInputStream() : c.getErrorStream();
-        if (in == null) throw new Exception("Server returned HTTP " + code);
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) sb.append(line);
-        }
-        if (code < 200 || code >= 300) {
-            try {
-                JSONObject err = new JSONObject(sb.toString());
-                throw new Exception(err.optString("detail", err.optString("error", "HTTP " + code)));
-            } catch (org.json.JSONException ex) {
-                throw new Exception("HTTP " + code + ": " + sb);
-            }
-        }
-        return new JSONObject(sb.toString());
+        if (m == null || m.trim().isEmpty()) return "Unknown local processing error.";
+        if (m.contains("No space left")) return "Your phone does not have enough free storage for the WAV output.";
+        return m;
     }
 
     @Override
@@ -853,7 +672,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
+        if (cancelToken != null) cancelToken.cancel();
         executor.shutdownNow();
+        super.onDestroy();
     }
 }
