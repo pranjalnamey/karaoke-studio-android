@@ -48,7 +48,7 @@ public class MainActivity extends Activity {
     private static final String PREFS = "karaoke_studio_v2";
     private static final String KEY_API = "api_base";
     private static final String DEFAULT_API = "https://karaoke-studio-backend-production.up.railway.app";
-    private static final String CONVERTER_URL = "https://ytmp3pc.com/";
+    private static final String CONVERTER_URL = "https://y2mate.gs/";
     private static final int BG = Color.rgb(8, 11, 20);
     private static final int CARD = Color.rgb(20, 25, 40);
     private static final int CARD_ALT = Color.rgb(27, 33, 51);
