@@ -17,7 +17,7 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 JOBS: Dict[str, dict] = {}
 LOCK = threading.Lock()
 
-app = FastAPI(title="Karaoke Studio AI", version="2.0")
+app = FastAPI(title="Karaoke Studio AI", version="2.1")
 
 
 class YoutubeRequest(BaseModel):
@@ -61,11 +61,23 @@ def normalize_audio(src: Path, dst: Path):
 
 def extract_youtube_audio(url: str, work: Path) -> Path:
     template = str(work / "source.%(ext)s")
-    run([
-        "yt-dlp", "-f", "bestaudio/best", "--no-playlist",
-        "--extract-audio", "--audio-format", "wav", "--audio-quality", "0",
-        "-o", template, url
-    ])
+    try:
+        run([
+            "yt-dlp", "-f", "bestaudio/best", "--no-playlist",
+            "--js-runtimes", "deno",
+            "--extract-audio", "--audio-format", "wav", "--audio-quality", "0",
+            "-o", template, url
+        ])
+    except RuntimeError as exc:
+        raw = str(exc)
+        lower = raw.lower()
+        if "http error 429" in lower or "confirm you're not a bot" in lower or "confirm you’re not a bot" in lower:
+            raise RuntimeError(
+                "YouTube temporarily blocked this cloud server (HTTP 429 / bot verification). "
+                "The karaoke engine is online, but YouTube refused this server's request. "
+                "Please try again later or use Upload → Karaoke for this source."
+            ) from None
+        raise
     wav = work / "source.wav"
     if not wav.exists():
         matches = list(work.glob("source.*"))
@@ -177,7 +189,7 @@ def process_master(job_id: str, input_path: Path, preset: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "2.0"}
+    return {"status": "ok", "version": "2.1", "youtube_js_runtime": "deno"}
 
 
 @app.post("/jobs/youtube-mp3")
