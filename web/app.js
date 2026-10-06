@@ -13,6 +13,9 @@ let karaokeModule = null;
 let activeSeparator = null;
 let cancelRequested = false;
 let generatedUrl = null;
+let progressHeartbeat = null;
+let lastProgressAt = 0;
+let processingStartedAt = 0;
 
 init();
 
@@ -21,6 +24,11 @@ async function init() {
   window.addEventListener("resize", updateResponsiveLabels);
   $("gpuMode").textContent = navigator.gpu ? "WebGPU available" : "WASM fallback";
   $("engineText").textContent = navigator.gpu ? "Karaoke AI · WebGPU" : "Karaoke AI · WASM";
+  const profile = getProcessingProfile();
+  const profileEl = $("processingProfile");
+  if (profileEl) profileEl.textContent = profile.label;
+  const wasmEl = $("wasmMode");
+  if (wasmEl) wasmEl.textContent = crossOriginIsolated ? "Multithread-ready" : "Single-thread fallback";
   document.querySelector(".status-dot").style.background = "var(--green)";
   await cleanupLegacyModelCache();
   await refreshModelStatus();
@@ -44,6 +52,37 @@ function updateResponsiveLabels() {
 async function refreshModelStatus() {
   const cached = await hasCachedModel();
   $("modelStatus").textContent = cached ? "Cached locally" : "First-use download";
+}
+
+function getProcessingProfile(forceLowMemory = false) {
+  const ua = navigator.userAgent || "";
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || window.innerWidth < 760;
+  const memory = Number(navigator.deviceMemory || 0);
+  const constrained = forceLowMemory || mobile || (!navigator.gpu) || (memory > 0 && memory <= 4);
+
+  if (constrained) {
+    return {
+      key: "low-memory",
+      label: mobile ? "Mobile Low Memory" : "Low Memory",
+      segmentSize: 128,
+      overlap: 0.15,
+      batchSize: 1,
+      providers: navigator.gpu ? ["webgpu", "wasm"] : ["wasm"],
+      detail: mobile
+        ? "Mobile-safe AI settings are active to reduce RAM use."
+        : "Reduced-memory AI settings are active."
+    };
+  }
+
+  return {
+    key: "standard",
+    label: "Standard Quality",
+    segmentSize: 256,
+    overlap: 0.25,
+    batchSize: 1,
+    providers: ["webgpu", "wasm"],
+    detail: "Standard desktop AI settings are active."
+  };
 }
 
 function openTool(action) {
@@ -122,7 +161,7 @@ function renderUpload(mode) {
       <strong>${mode === "master" ? "Choose an audio file to master" : "Choose an audio file for karaoke"}</strong>
       <p>${mode === "master"
         ? "Audio is decoded and mastered in this browser."
-        : "HT-Demucs separates the vocal stem locally. Desktop is recommended for long songs; mobile support depends on available memory."}</p>
+        : "UVR Karaoke 2 removes the lead vocal locally. Mobile automatically uses a lower-memory processing profile."}</p>
       <button class="primary" id="chooseFile">Choose audio</button>
     </div>
     <div id="selectedFile"></div>
@@ -152,7 +191,7 @@ function renderSelectedFile() {
   const karaoke = currentMode !== "master";
   host.innerHTML = `
     <div class="file-chip"><strong>${escapeHtml(selectedFile.name)}</strong><span>${mb} MB</span></div>
-    ${karaoke ? '<div class="notice warn" id="modelNotice">The professional model is downloaded once and cached by your browser.</div>' : ""}
+    ${karaoke ? '<div class="notice warn" id="modelNotice">The professional model is downloaded once and cached by your browser.</div><div class="notice" id="profileNotice"></div>' : ""}
     <div class="button-row">
       <button class="primary" id="startProcess">${karaoke ? "Create professional karaoke" : "Master locally"}</button>
       <button class="secondary" id="replaceFile">Choose another file</button>
@@ -162,6 +201,9 @@ function renderSelectedFile() {
   $("replaceFile").addEventListener("click", () => audioPicker.click());
   $("startProcess").addEventListener("click", karaoke ? runKaraoke : runMastering);
   if (karaoke) {
+    const profile = getProcessingProfile();
+    const profileNote = $("profileNotice");
+    if (profileNote) profileNote.textContent = profile.label + " · " + profile.detail;
     hasCachedModel().then((cached) => {
       const note = $("modelNotice");
       if (note) note.textContent = cached
@@ -177,64 +219,123 @@ async function runKaraoke() {
   toggleProcessButtons(true);
 
   let inputUrl = null;
+  let attemptedLowMemoryRetry = false;
+
   try {
     setProgress("Preparing karaoke AI", 2, "Loading the UVR Karaoke 2 browser engine…");
     const { createSeparator } = await ensureKaraokeLibrary();
     if (cancelRequested) throw new Error("Cancelled");
 
-    activeSeparator = createSeparator("UVR_MDXNET_KARA_2", {
-      common: {
-        logLevel: "warning",
-        outputSingleStem: "instrumental",
-        onProgress: (progress) => {
-          if (cancelRequested) return;
-          const fraction = Math.max(0, Math.min(1, progress.fraction || 0));
-
-          if (progress.stage === "loading-model") {
-            setProgress(
-              "Loading UVR Karaoke 2",
-              4 + Math.round(fraction * 16),
-              fraction < 1
-                ? "First use downloads and caches the karaoke model in this browser."
-                : "Lead-vocal model ready."
-            );
-          } else if (progress.stage === "demixing") {
-            const chunkText = progress.chunk && progress.totalChunks
-              ? ` · chunk ${progress.chunk}/${progress.totalChunks}`
-              : "";
-            setProgress(
-              "Removing lead vocal",
-              20 + Math.round(fraction * 72),
-              "Preserving backing vocals and choir where the model identifies them" + chunkText
-            );
-          } else if (progress.stage === "writing-output") {
-            setProgress("Preparing karaoke WAV", 92 + Math.round(fraction * 7), "Writing the final instrumental + backing-vocal mix.");
-          }
-        },
-      },
-      mdx: {
-        segmentSize: 256,
-        overlap: 0.25,
-        batchSize: 1,
-        hopLength: 1024,
-        executionProviders: navigator.gpu ? ["webgpu", "wasm"] : ["wasm"],
-      },
-    });
-
-    await activeSeparator.loadModel();
-    if (cancelRequested) throw new Error("Cancelled");
-
     inputUrl = URL.createObjectURL(selectedFile);
-    const stemUrls = await activeSeparator.separate(inputUrl);
-    if (cancelRequested) throw new Error("Cancelled");
-    if (!stemUrls?.length) throw new Error("The karaoke model did not produce an output stem.");
 
-    // outputSingleStem='instrumental' means the sole returned stem is the
-    // karaoke mix: instruments + backing vocals/choir, with the lead vocal removed.
-    showResultUrl(stemUrls[0], "KaraokeStudio-LeadRemoved.wav", "Karaoke ready · backing vocals preserved");
-    setProgress("Complete", 100, "Lead vocal removed. Backing vocals/choir are retained where the model can distinguish them.");
+    const runAttempt = async (forceLowMemory = false) => {
+      const profile = getProcessingProfile(forceLowMemory);
+      const profileEl = $("processingProfile");
+      if (profileEl) profileEl.textContent = profile.label;
+
+      setProgress(
+        forceLowMemory ? "Retrying in Low Memory mode" : "Preparing karaoke AI",
+        3,
+        profile.detail
+      );
+
+      activeSeparator = createSeparator("UVR_MDXNET_KARA_2", {
+        common: {
+          logLevel: "warning",
+          outputSingleStem: "instrumental",
+          onProgress: (progress) => {
+            if (cancelRequested) return;
+            lastProgressAt = Date.now();
+            const fraction = Math.max(0, Math.min(1, progress.fraction || 0));
+
+            if (progress.stage === "loading-model") {
+              setProgress(
+                "Loading UVR Karaoke 2",
+                4 + Math.round(fraction * 16),
+                fraction < 1
+                  ? "First use downloads and caches the karaoke model in this browser."
+                  : "Lead-vocal model ready."
+              );
+            } else if (progress.stage === "demixing") {
+              const chunkText = progress.chunk && progress.totalChunks
+                ? ` · chunk ${progress.chunk}/${progress.totalChunks}`
+                : "";
+              setProgress(
+                "Removing lead vocal",
+                20 + Math.round(fraction * 72),
+                profile.label + " · Preserving backing vocals and choir where the model identifies them" + chunkText
+              );
+            } else if (progress.stage === "writing-output") {
+              setProgress(
+                "Preparing karaoke WAV",
+                92 + Math.round(fraction * 7),
+                "Writing the final instrumental + backing-vocal mix."
+              );
+            }
+          },
+        },
+        mdx: {
+          segmentSize: profile.segmentSize,
+          overlap: profile.overlap,
+          batchSize: profile.batchSize,
+          hopLength: 1024,
+          executionProviders: profile.providers,
+        },
+      });
+
+      await activeSeparator.loadModel();
+      if (cancelRequested) throw new Error("Cancelled");
+
+      processingStartedAt = Date.now();
+      lastProgressAt = Date.now();
+      startProgressHeartbeat(profile);
+
+      try {
+        const stemUrls = await activeSeparator.separate(inputUrl);
+        if (cancelRequested) throw new Error("Cancelled");
+        if (!stemUrls?.length) throw new Error("The karaoke model did not produce an output stem.");
+        return stemUrls;
+      } finally {
+        stopProgressHeartbeat();
+      }
+    };
+
+    let stemUrls;
+    try {
+      stemUrls = await runAttempt(false);
+    } catch (firstError) {
+      const message = String(firstError?.message || firstError);
+      const alreadyLow = getProcessingProfile(false).key === "low-memory";
+      const retryable = /memory|allocation|wasm|webgpu|device|buffer|tensor/i.test(message);
+      if (!alreadyLow && retryable && !cancelRequested) {
+        attemptedLowMemoryRetry = true;
+        setProgress(
+          "Switching to Low Memory mode",
+          3,
+          "The first attempt was too heavy for this device. Retrying with smaller AI chunks…"
+        );
+        await nextPaint();
+        stemUrls = await runAttempt(true);
+      } else {
+        throw firstError;
+      }
+    }
+
+    showResultUrl(
+      stemUrls[0],
+      "KaraokeStudio-LeadRemoved.wav",
+      attemptedLowMemoryRetry ? "Karaoke ready · Low Memory mode" : "Karaoke ready · backing vocals preserved"
+    );
+    setProgress(
+      "Complete",
+      100,
+      attemptedLowMemoryRetry
+        ? "Completed using the lower-memory mobile profile."
+        : "Lead vocal removed. Backing vocals/choir are retained where the model can distinguish them."
+    );
     await refreshModelStatus();
   } catch (error) {
+    stopProgressHeartbeat();
     if (String(error?.message || error).toLowerCase().includes("cancelled")) {
       setProgress("Cancelled", 0, "Processing was cancelled.");
     } else {
@@ -243,9 +344,37 @@ async function runKaraoke() {
       alert(friendlyError(error));
     }
   } finally {
+    stopProgressHeartbeat();
     if (inputUrl) URL.revokeObjectURL(inputUrl);
     activeSeparator = null;
     toggleProcessButtons(false);
+  }
+}
+
+function startProgressHeartbeat(profile) {
+  stopProgressHeartbeat();
+  progressHeartbeat = setInterval(() => {
+    if (!processingStartedAt || cancelRequested) return;
+    const idleSeconds = Math.floor((Date.now() - lastProgressAt) / 1000);
+    const totalSeconds = Math.floor((Date.now() - processingStartedAt) / 1000);
+    if (idleSeconds >= 20) {
+      const percent = Number(String($("progressPercent").textContent || "20").replace("%", "")) || 20;
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      const elapsed = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      setProgress(
+        "AI is still processing",
+        percent,
+        `${profile.label} · First chunks can take longer on phones. Elapsed: ${elapsed}. Keep this tab open.`
+      );
+    }
+  }, 5000);
+}
+
+function stopProgressHeartbeat() {
+  if (progressHeartbeat) {
+    clearInterval(progressHeartbeat);
+    progressHeartbeat = null;
   }
 }
 
@@ -425,8 +554,8 @@ function audioBufferToWav(buffer) {
 
 function friendlyError(error) {
   const message = String(error?.message || error || "Unknown browser processing error.");
-  if (/out of memory|allocation|memory/i.test(message)) {
-    return "This browser ran out of memory during karaoke separation. Close other tabs/apps and retry; for long songs, desktop Chrome/Edge is recommended.";
+  if (/out of memory|allocation|memory|buffer|tensor/i.test(message)) {
+    return "This device ran out of memory during karaoke separation. Mobile Low Memory mode is used automatically, but very old/low-RAM phones may still need a shorter song or a desktop browser.";
   }
   if (/webgpu/i.test(message)) {
     return "WebGPU could not start on this device. Karaoke Studio will normally fall back to WebAssembly; try current Chrome or Edge.";
