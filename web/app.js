@@ -275,13 +275,49 @@ async function cloudFetch(path, options = {}, retryPin = true) {
   return response;
 }
 
+async function waitForCloudWorker() {
+  const maxAttempts = 18;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (cancelRequested) throw new Error("Cancelled");
+
+    setProgress(
+      "Waking cloud worker",
+      Math.min(4, 1 + Math.floor(attempt / 5)),
+      attempt === 1
+        ? "Starting the private Karaoke Studio worker. A cold start can take a few minutes."
+        : "Cloud worker is still starting… attempt " + attempt + "/" + maxAttempts
+    );
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(CLOUD_WORKER_URL + "/health", {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal
+      });
+      if (response.ok) {
+        clearTimeout(timer);
+        return true;
+      }
+    } catch {}
+    clearTimeout(timer);
+
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+  throw new Error("Cloud worker did not become ready in time. Please try again in a minute.");
+}
+
 async function runCloudKaraoke() {
   if (!selectedFile || !CLOUD_WORKER_ENABLED) return;
   cancelRequested = false;
   toggleProcessButtons(true);
 
   try {
-    setProgress("Uploading to cloud worker", 4, "Your phone is sending the audio to the private Karaoke Studio worker…");
+    await waitForCloudWorker();
+    setProgress("Uploading to cloud worker", 5, "Your phone is sending the audio to the private Karaoke Studio worker…");
 
     const form = new FormData();
     form.append("file", selectedFile, selectedFile.name);
