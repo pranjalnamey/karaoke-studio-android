@@ -1,6 +1,8 @@
 const KARAOKE_MODEL_URL = "https://huggingface.co/AI4future/RVC/resolve/main/UVR_MDXNET_KARA_2.onnx";
 const KARAOKE_LIBRARY_URL = "https://esm.sh/web-audio-separation@0.3.0?bundle&deps=onnxruntime-web@1.29.0";
 const SAMPLE_RATE = 44100;
+const CLOUD_WORKER_URL = String(window.KARAOKE_CLOUD?.url || "").replace(/\/$/, "");
+const CLOUD_WORKER_ENABLED = Boolean(window.KARAOKE_CLOUD?.enabled && CLOUD_WORKER_URL);
 
 const $ = (id) => document.getElementById(id);
 const workspace = $("workspace");
@@ -16,6 +18,7 @@ let generatedUrl = null;
 let progressHeartbeat = null;
 let lastProgressAt = 0;
 let processingStartedAt = 0;
+let activeCloudJobId = null;
 
 init();
 
@@ -29,6 +32,8 @@ async function init() {
   if (profileEl) profileEl.textContent = profile.label;
   const wasmEl = $("wasmMode");
   if (wasmEl) wasmEl.textContent = crossOriginIsolated ? "Multithread-ready" : "Single-thread fallback";
+  const cloudEl = $("cloudWorkerStatus");
+  if (cloudEl) cloudEl.textContent = CLOUD_WORKER_ENABLED ? "Available" : "Not configured";
   document.querySelector(".status-dot").style.background = "var(--green)";
   await cleanupLegacyModelCache();
   await refreshModelStatus();
@@ -98,8 +103,18 @@ function openTool(action) {
   if (action === "master") renderUpload("master");
 }
 
-function closeWorkspace() {
+async function closeWorkspace() {
   cancelRequested = true;
+  if (activeCloudJobId && CLOUD_WORKER_ENABLED) {
+    try {
+      const pin = localStorage.getItem("karaokeFamilyPin") || "";
+      await fetch(CLOUD_WORKER_URL + "/jobs/" + activeCloudJobId + "/cancel", {
+        method: "POST",
+        headers: { "X-Karaoke-PIN": pin }
+      });
+    } catch {}
+    activeCloudJobId = null;
+  }
   if (generatedUrl) URL.revokeObjectURL(generatedUrl);
   generatedUrl = null;
   selectedFile = null;
@@ -189,28 +204,183 @@ function renderSelectedFile() {
   if (!host || !selectedFile) return;
   const mb = (selectedFile.size / 1024 / 1024).toFixed(1);
   const karaoke = currentMode !== "master";
+  const cloudButtons = karaoke && CLOUD_WORKER_ENABLED
+    ? '<button class="primary" id="startCloudProcess">Create in Cloud</button><button class="secondary" id="startProcess">Process on this device</button>'
+    : '<button class="primary" id="startProcess">' + (karaoke ? "Create professional karaoke" : "Master locally") + '</button>';
+
   host.innerHTML = `
     <div class="file-chip"><strong>${escapeHtml(selectedFile.name)}</strong><span>${mb} MB</span></div>
     ${karaoke ? '<div class="notice warn" id="modelNotice">The professional model is downloaded once and cached by your browser.</div><div class="notice" id="profileNotice"></div>' : ""}
+    ${karaoke && CLOUD_WORKER_ENABLED ? '<div class="notice good">Cloud processing is recommended for phones. Your phone only uploads/downloads the audio; the AI work happens on the worker.</div>' : ""}
     <div class="button-row">
-      <button class="primary" id="startProcess">${karaoke ? "Create professional karaoke" : "Master locally"}</button>
+      ${cloudButtons}
       <button class="secondary" id="replaceFile">Choose another file</button>
     </div>
     <div id="resultHost"></div>
   `;
+
   $("replaceFile").addEventListener("click", () => audioPicker.click());
-  $("startProcess").addEventListener("click", karaoke ? runKaraoke : runMastering);
+  const localButton = $("startProcess");
+  if (localButton) localButton.addEventListener("click", karaoke ? runKaraoke : runMastering);
+  const cloudButton = $("startCloudProcess");
+  if (cloudButton) cloudButton.addEventListener("click", runCloudKaraoke);
+
   if (karaoke) {
     const profile = getProcessingProfile();
     const profileNote = $("profileNotice");
-    if (profileNote) profileNote.textContent = profile.label + " · " + profile.detail;
+    if (profileNote) {
+      profileNote.textContent = CLOUD_WORKER_ENABLED
+        ? "Cloud available · Local fallback: " + profile.label
+        : profile.label + " · " + profile.detail;
+    }
     hasCachedModel().then((cached) => {
       const note = $("modelNotice");
-      if (note) note.textContent = cached
-        ? "HT-Demucs model is already cached in this browser."
-        : "First run will download approximately 166 MB once, then cache it for future songs.";
+      if (note) note.textContent = CLOUD_WORKER_ENABLED
+        ? "Cloud mode does not need the AI model on this phone. Local fallback still uses the browser model."
+        : (cached
+            ? "UVR Karaoke 2 is already cached in this browser."
+            : "First local run downloads the karaoke model once, then caches it for future songs.");
     });
   }
+}
+
+async function getCloudPin() {
+  let pin = localStorage.getItem("karaokeFamilyPin") || "";
+  if (!pin) {
+    pin = (window.prompt("Enter the Karaoke Studio family PIN") || "").trim();
+    if (pin) localStorage.setItem("karaokeFamilyPin", pin);
+  }
+  if (!pin) throw new Error("Family PIN is required for cloud processing.");
+  return pin;
+}
+
+async function cloudFetch(path, options = {}, retryPin = true) {
+  const pin = await getCloudPin();
+  const headers = new Headers(options.headers || {});
+  headers.set("X-Karaoke-PIN", pin);
+  const response = await fetch(CLOUD_WORKER_URL + path, { ...options, headers });
+
+  if (response.status === 401 && retryPin) {
+    localStorage.removeItem("karaokeFamilyPin");
+    return cloudFetch(path, options, false);
+  }
+  if (!response.ok) {
+    let detail = "Cloud worker returned HTTP " + response.status;
+    try {
+      const body = await response.json();
+      detail = body.detail || body.error || detail;
+    } catch {}
+    throw new Error(detail);
+  }
+  return response;
+}
+
+async function runCloudKaraoke() {
+  if (!selectedFile || !CLOUD_WORKER_ENABLED) return;
+  cancelRequested = false;
+  toggleProcessButtons(true);
+
+  try {
+    setProgress("Uploading to cloud worker", 4, "Your phone is sending the audio to the private Karaoke Studio worker…");
+
+    const form = new FormData();
+    form.append("file", selectedFile, selectedFile.name);
+    const response = await cloudFetch("/jobs/upload-bundle", {
+      method: "POST",
+      body: form
+    });
+    const created = await response.json();
+    activeCloudJobId = created.job_id;
+    if (!activeCloudJobId) throw new Error("Cloud worker did not return a job ID.");
+
+    while (!cancelRequested) {
+      const statusResponse = await cloudFetch("/jobs/" + activeCloudJobId);
+      const job = await statusResponse.json();
+
+      setProgress(
+        job.stage || "Cloud processing",
+        Number.isFinite(job.percent) ? job.percent : 25,
+        job.detail || "Cloud AI is working…"
+      );
+
+      if (job.status === "completed") {
+        await showCloudResults(
+          activeCloudJobId,
+          job.source_filename || "KaraokeStudio-Original-320k.mp3",
+          job.karaoke_filename || "KaraokeStudio-Karaoke-320k.mp3"
+        );
+        setProgress("Complete", 100, "Both MP3 and karaoke are ready.");
+        activeCloudJobId = null;
+        return;
+      }
+
+      if (job.status === "failed") {
+        throw new Error(job.error || job.detail || "Cloud processing failed.");
+      }
+      if (job.status === "cancelled") {
+        throw new Error("Cancelled");
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    throw new Error("Cancelled");
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (message.toLowerCase().includes("cancelled")) {
+      setProgress("Cancelled", 0, "Processing was cancelled.");
+    } else {
+      console.error(error);
+      setProgress("Cloud processing failed", 0, friendlyError(error));
+      const useLocal = window.confirm(
+        friendlyError(error) + "\n\nWould you like to try processing on this device instead?"
+      );
+      if (useLocal) {
+        activeCloudJobId = null;
+        toggleProcessButtons(false);
+        return runKaraoke();
+      }
+    }
+  } finally {
+    activeCloudJobId = null;
+    toggleProcessButtons(false);
+  }
+}
+
+async function showCloudResults(jobId, sourceName, karaokeName) {
+  setProgress("Downloading results", 96, "Bringing the finished MP3 files back to this device…");
+
+  const [sourceResponse, karaokeResponse] = await Promise.all([
+    cloudFetch("/jobs/" + jobId + "/download/source"),
+    cloudFetch("/jobs/" + jobId + "/download/karaoke")
+  ]);
+
+  const [sourceBlob, karaokeBlob] = await Promise.all([
+    sourceResponse.blob(),
+    karaokeResponse.blob()
+  ]);
+
+  const sourceUrl = URL.createObjectURL(sourceBlob);
+  const karaokeUrl = URL.createObjectURL(karaokeBlob);
+
+  const host = $("resultHost");
+  if (!host) return;
+  host.innerHTML = `
+    <div class="result-card">
+      <h3>Both files are ready</h3>
+      <div class="notice good">The heavy AI processing happened on the cloud worker, not on this phone.</div>
+      <p class="muted">Original MP3</p>
+      <audio controls src="${sourceUrl}"></audio>
+      <div class="button-row">
+        <a class="primary" style="display:grid;place-items:center;text-decoration:none" href="${sourceUrl}" download="${escapeHtml(sourceName)}">Download MP3</a>
+      </div>
+      <p class="muted" style="margin-top:16px">Karaoke MP3</p>
+      <audio controls src="${karaokeUrl}"></audio>
+      <div class="button-row">
+        <a class="primary" style="display:grid;place-items:center;text-decoration:none" href="${karaokeUrl}" download="${escapeHtml(karaokeName)}">Download Karaoke</a>
+      </div>
+    </div>
+  `;
 }
 
 async function runKaraoke() {
@@ -509,6 +679,8 @@ function setProgress(stage, percent, detail) {
 function toggleProcessButtons(disabled) {
   const button = $("startProcess");
   if (button) button.disabled = disabled;
+  const cloudButton = $("startCloudProcess");
+  if (cloudButton) cloudButton.disabled = disabled;
 }
 
 function floatToI16(x) {
