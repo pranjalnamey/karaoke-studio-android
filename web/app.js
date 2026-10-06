@@ -1,10 +1,6 @@
-const MODEL_URL = "https://huggingface.co/StemSplitio/htdemucs-ft-vocals-onnx/resolve/main/htdemucs_ft_vocals_fp16weights.onnx";
-const ORT_VERSION = "1.22.0";
-const SEGMENT = 343980;
-const OVERLAP = Math.floor(SEGMENT / 4);
-const STRIDE = SEGMENT - OVERLAP;
+const KARAOKE_MODEL_URL = "https://huggingface.co/AI4future/RVC/resolve/main/UVR_MDXNET_KARA_2.onnx";
+const KARAOKE_LIBRARY_URL = "https://esm.sh/web-audio-separation@0.3.0?bundle&deps=onnxruntime-web@1.29.0";
 const SAMPLE_RATE = 44100;
-const VOCAL_ROW = 3;
 
 const $ = (id) => document.getElementById(id);
 const workspace = $("workspace");
@@ -13,8 +9,8 @@ const audioPicker = $("audioPicker");
 
 let currentMode = null;
 let selectedFile = null;
-let ortLoaded = false;
-let ortSession = null;
+let karaokeModule = null;
+let activeSeparator = null;
 let cancelRequested = false;
 let generatedUrl = null;
 
@@ -24,8 +20,9 @@ async function init() {
   updateResponsiveLabels();
   window.addEventListener("resize", updateResponsiveLabels);
   $("gpuMode").textContent = navigator.gpu ? "WebGPU available" : "WASM fallback";
-  $("engineText").textContent = navigator.gpu ? "WebGPU capable" : "WASM capable";
+  $("engineText").textContent = navigator.gpu ? "Karaoke AI · WebGPU" : "Karaoke AI · WASM";
   document.querySelector(".status-dot").style.background = "var(--green)";
+  await cleanupLegacyModelCache();
   await refreshModelStatus();
 
   document.querySelectorAll(".action-card").forEach((button) => {
@@ -178,96 +175,65 @@ async function runKaraoke() {
   if (!selectedFile) return;
   cancelRequested = false;
   toggleProcessButtons(true);
+
+  let inputUrl = null;
   try {
-    setProgress("Preparing AI", 1, "Loading ONNX Runtime Web…");
-    await ensureOrt();
-
-    setProgress("Loading model", 3, "Checking browser cache…");
-    const modelBytes = await getModelBytes((p) => setProgress("Downloading AI model", Math.max(3, Math.round(p * 18)), "One-time HT-Demucs model download"));
+    setProgress("Preparing karaoke AI", 2, "Loading the UVR Karaoke 2 browser engine…");
+    const { createSeparator } = await ensureKaraokeLibrary();
     if (cancelRequested) throw new Error("Cancelled");
 
-    setProgress("Creating AI session", 20, navigator.gpu ? "Trying WebGPU first…" : "Using WebAssembly fallback…");
-    ortSession = await createSession(modelBytes);
+    activeSeparator = createSeparator("UVR_MDXNET_KARA_2", {
+      common: {
+        logLevel: "warning",
+        outputSingleStem: "instrumental",
+        onProgress: (progress) => {
+          if (cancelRequested) return;
+          const fraction = Math.max(0, Math.min(1, progress.fraction || 0));
 
-    setProgress("Decoding audio", 23, "Reading the selected song locally…");
-    const audio = await decodeAndResample(selectedFile, SAMPLE_RATE);
+          if (progress.stage === "loading-model") {
+            setProgress(
+              "Loading UVR Karaoke 2",
+              4 + Math.round(fraction * 16),
+              fraction < 1
+                ? "First use downloads and caches the karaoke model in this browser."
+                : "Lead-vocal model ready."
+            );
+          } else if (progress.stage === "demixing") {
+            const chunkText = progress.chunk && progress.totalChunks
+              ? ` · chunk ${progress.chunk}/${progress.totalChunks}`
+              : "";
+            setProgress(
+              "Removing lead vocal",
+              20 + Math.round(fraction * 72),
+              "Preserving backing vocals and choir where the model identifies them" + chunkText
+            );
+          } else if (progress.stage === "writing-output") {
+            setProgress("Preparing karaoke WAV", 92 + Math.round(fraction * 7), "Writing the final instrumental + backing-vocal mix.");
+          }
+        },
+      },
+      mdx: {
+        segmentSize: 256,
+        overlap: 0.25,
+        batchSize: 1,
+        hopLength: 1024,
+        executionProviders: navigator.gpu ? ["webgpu", "wasm"] : ["wasm"],
+      },
+    });
+
+    await activeSeparator.loadModel();
     if (cancelRequested) throw new Error("Cancelled");
 
-    const left = audio.getChannelData(0);
-    const right = audio.numberOfChannels > 1 ? audio.getChannelData(1) : left;
-    const total = audio.length;
-    const chunks = Math.max(1, Math.ceil(total / STRIDE));
-    const window = makeWindow();
+    inputUrl = URL.createObjectURL(selectedFile);
+    const stemUrls = await activeSeparator.separate(inputUrl);
+    if (cancelRequested) throw new Error("Cancelled");
+    if (!stemUrls?.length) throw new Error("The karaoke model did not produce an output stem.");
 
-    let vocalL = new Float32Array(SEGMENT);
-    let vocalR = new Float32Array(SEGMENT);
-    let weights = new Float32Array(SEGMENT);
-    let base = 0;
-    const wavParts = [];
-    let dataBytes = 0;
-
-    for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex++) {
-      if (cancelRequested) throw new Error("Cancelled");
-
-      const start = chunkIndex * STRIDE;
-      const chunkLen = Math.min(SEGMENT, total - start);
-      const input = new Float32Array(2 * SEGMENT);
-      input.set(left.subarray(start, start + chunkLen), 0);
-      input.set(right.subarray(start, start + chunkLen), SEGMENT);
-
-      const tensor = new ort.Tensor("float32", input, [1, 2, SEGMENT]);
-      const results = await ortSession.run({ mix: tensor });
-      const stemsTensor = results.stems || results[Object.keys(results)[0]];
-      if (!stemsTensor?.data) throw new Error("HT-Demucs returned no stem data.");
-      const stems = stemsTensor.data;
-
-      const vLeftOffset = (VOCAL_ROW * 2) * SEGMENT;
-      const vRightOffset = vLeftOffset + SEGMENT;
-
-      for (let k = 0; k < chunkLen; k++) {
-        const w = window[k];
-        vocalL[k] += stems[vLeftOffset + k] * w;
-        vocalR[k] += stems[vRightOffset + k] * w;
-        weights[k] += w;
-      }
-
-      const last = chunkIndex === chunks - 1;
-      const flushEnd = last ? total : Math.min(total, (chunkIndex + 1) * STRIDE);
-      const flushCount = Math.max(0, flushEnd - base);
-      const pcm = new Uint8Array(flushCount * 4);
-      const view = new DataView(pcm.buffer);
-
-      for (let k = 0; k < flushCount; k++) {
-        const w = weights[k] < 1e-8 ? 1e-8 : weights[k];
-        const vl = vocalL[k] / w;
-        const vr = vocalR[k] / w;
-        const mixL = left[base + k] ?? 0;
-        const mixR = right[base + k] ?? 0;
-        const instL = softLimit(mixL - vl);
-        const instR = softLimit(mixR - vr);
-        view.setInt16(k * 4, floatToI16(instL), true);
-        view.setInt16(k * 4 + 2, floatToI16(instR), true);
-      }
-
-      wavParts.push(pcm);
-      dataBytes += pcm.byteLength;
-
-      if (!last) {
-        const keep = SEGMENT - flushCount;
-        vocalL.copyWithin(0, flushCount, SEGMENT); vocalL.fill(0, keep);
-        vocalR.copyWithin(0, flushCount, SEGMENT); vocalR.fill(0, keep);
-        weights.copyWithin(0, flushCount, SEGMENT); weights.fill(0, keep);
-        base += flushCount;
-      }
-
-      const pct = 28 + Math.round(((chunkIndex + 1) / chunks) * 68);
-      setProgress("AI separating vocals", Math.min(96, pct), `Segment ${chunkIndex + 1} of ${chunks}`);
-      await nextPaint();
-    }
-
-    const blob = new Blob([wavHeader(dataBytes, SAMPLE_RATE, 2), ...wavParts], { type: "audio/wav" });
-    showResult(blob, "KaraokeStudio-AI.wav", "Professional karaoke ready");
-    setProgress("Complete", 100, "Vocal separation finished locally.");
+    // outputSingleStem='instrumental' means the sole returned stem is the
+    // karaoke mix: instruments + backing vocals/choir, with the lead vocal removed.
+    showResultUrl(stemUrls[0], "KaraokeStudio-LeadRemoved.wav", "Karaoke ready · backing vocals preserved");
+    setProgress("Complete", 100, "Lead vocal removed. Backing vocals/choir are retained where the model can distinguish them.");
+    await refreshModelStatus();
   } catch (error) {
     if (String(error?.message || error).toLowerCase().includes("cancelled")) {
       setProgress("Cancelled", 0, "Processing was cancelled.");
@@ -277,6 +243,8 @@ async function runKaraoke() {
       alert(friendlyError(error));
     }
   } finally {
+    if (inputUrl) URL.revokeObjectURL(inputUrl);
+    activeSeparator = null;
     toggleProcessButtons(false);
   }
 }
@@ -329,32 +297,10 @@ async function runMastering() {
   }
 }
 
-async function ensureOrt() {
-  if (ortLoaded && window.ort) return;
-  const src = navigator.gpu
-    ? `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/ort.webgpu.min.js`
-    : `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/ort.min.js`;
-  await loadScript(src);
-  ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
-  ort.env.wasm.numThreads = 1;
-  ortLoaded = true;
-}
-
-async function createSession(bytes) {
-  const options = { graphOptimizationLevel: "disabled" };
-  if (navigator.gpu) {
-    try {
-      const session = await ort.InferenceSession.create(bytes, { ...options, executionProviders: ["webgpu"] });
-      $("gpuMode").textContent = "WebGPU active";
-      $("engineText").textContent = "WebGPU active";
-      return session;
-    } catch (e) {
-      console.warn("WebGPU session failed, falling back to WASM", e);
-    }
-  }
-  $("gpuMode").textContent = "WASM active";
-  $("engineText").textContent = "WASM active";
-  return ort.InferenceSession.create(bytes, { ...options, executionProviders: ["wasm"] });
+async function ensureKaraokeLibrary() {
+  if (karaokeModule) return karaokeModule;
+  karaokeModule = await import(KARAOKE_LIBRARY_URL);
+  return karaokeModule;
 }
 
 async function decodeAndResample(file, targetRate) {
@@ -375,67 +321,37 @@ async function decodeAndResample(file, targetRate) {
   return offline.startRendering();
 }
 
-function makeWindow() {
-  const w = new Float32Array(SEGMENT);
-  w.fill(1);
-  for (let i = 0; i < OVERLAP; i++) {
-    const v = i / (OVERLAP - 1);
-    w[i] = v;
-    w[SEGMENT - 1 - i] = v;
-  }
-  return w;
-}
-
 async function hasCachedModel() {
   if (!("caches" in window)) return false;
   try {
-    const cache = await caches.open("karaoke-studio-model-v1");
-    return Boolean(await cache.match(MODEL_URL));
+    const cache = await caches.open("web-demix2-models");
+    return Boolean(await cache.match(KARAOKE_MODEL_URL));
   } catch { return false; }
 }
 
-async function getModelBytes(onProgress) {
-  const cache = "caches" in window ? await caches.open("karaoke-studio-model-v1") : null;
-  const cached = cache ? await cache.match(MODEL_URL) : null;
-  if (cached) {
-    onProgress?.(1);
-    await refreshModelStatus();
-    return new Uint8Array(await cached.arrayBuffer());
-  }
+async function cleanupLegacyModelCache() {
+  if (!("caches" in window)) return;
+  try {
+    // v4.0 cached a much larger HT-Demucs model. It is no longer used.
+    await caches.delete("karaoke-studio-model-v1");
+  } catch {}
+}
 
-  const response = await fetch(MODEL_URL, { mode: "cors" });
-  if (!response.ok) throw new Error(`AI model download failed: HTTP ${response.status}`);
-  const total = Number(response.headers.get("content-length")) || 0;
-  if (!response.body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (cache) await cache.put(MODEL_URL, new Response(bytes, { headers: { "content-type": "application/octet-stream" } }));
-    onProgress?.(1);
-    await refreshModelStatus();
-    return bytes;
-  }
-
-  const cachePromise = cache ? cache.put(MODEL_URL, response.clone()).catch(() => {}) : Promise.resolve();
-  const reader = response.body.getReader();
-  const chunks = [];
-  let received = 0;
-  while (true) {
-    if (cancelRequested) throw new Error("Cancelled");
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.byteLength;
-    if (total) onProgress?.(received / total);
-  }
-  await cachePromise;
-  const combined = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  onProgress?.(1);
-  await refreshModelStatus();
-  return combined;
+function showResultUrl(url, filename, heading) {
+  if (generatedUrl && generatedUrl !== url) URL.revokeObjectURL(generatedUrl);
+  generatedUrl = url;
+  const host = $("resultHost");
+  if (!host) return;
+  host.innerHTML = `
+    <div class="result-card">
+      <h3>${escapeHtml(heading)}</h3>
+      <audio controls src="${generatedUrl}"></audio>
+      <div class="notice good">This output is designed to keep backing vocals/group choir while removing the lead singer. Results still depend on how the original song was mixed.</div>
+      <div class="button-row">
+        <a class="primary" style="display:grid;place-items:center;text-decoration:none" href="${generatedUrl}" download="${filename}">Download WAV</a>
+      </div>
+    </div>
+  `;
 }
 
 function showResult(blob, filename, heading) {
@@ -464,11 +380,6 @@ function setProgress(stage, percent, detail) {
 function toggleProcessButtons(disabled) {
   const button = $("startProcess");
   if (button) button.disabled = disabled;
-}
-
-function softLimit(x) {
-  x = Math.max(-1.5, Math.min(1.5, x));
-  return x / (1 + 0.08 * Math.abs(x));
 }
 
 function floatToI16(x) {
@@ -515,7 +426,7 @@ function audioBufferToWav(buffer) {
 function friendlyError(error) {
   const message = String(error?.message || error || "Unknown browser processing error.");
   if (/out of memory|allocation|memory/i.test(message)) {
-    return "This browser ran out of memory during professional separation. Close other tabs/apps and retry; for long songs, desktop Chrome/Edge is recommended.";
+    return "This browser ran out of memory during karaoke separation. Close other tabs/apps and retry; for long songs, desktop Chrome/Edge is recommended.";
   }
   if (/webgpu/i.test(message)) {
     return "WebGPU could not start on this device. Karaoke Studio will normally fall back to WebAssembly; try current Chrome or Edge.";
