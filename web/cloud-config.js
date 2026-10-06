@@ -1,5 +1,4 @@
 window.KARAOKE_CLOUD = {
-  // Filled in after the Azure Container Apps worker is deployed.
-  enabled: false,
-  url: ""
+  enabled: true,
+  url: "https://karaoke-studio-wrkr.wonderfulfield-8af594ec.centralindia.azurecontainerapps.io"
 };
