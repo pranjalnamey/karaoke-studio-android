@@ -48,6 +48,7 @@
           <div class="device-row"><span>AI model</span><strong id="modelStatus">Not loaded</strong></div>
           <div class="device-row"><span>Processing profile</span><strong id="processingProfile">Detecting</strong></div>
           <div class="device-row"><span>WASM mode</span><strong id="wasmMode">Checking</strong></div>
+          <div class="device-row"><span>Cloud worker</span><strong id="cloudWorkerStatus">Checking</strong></div>
           <div class="device-note">Desktop gets a wider workspace. Mobile switches to a single-column touch layout.</div>
         </aside>
       </section>
@@ -142,6 +143,7 @@
   </div>
 
   <input id="audioPicker" type="file" accept="audio/*" hidden />
+  <script src="./cloud-config.js"></script>
   <script src="./app.js" type="module"></script>
 </body>
 </html>
