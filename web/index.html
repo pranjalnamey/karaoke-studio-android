@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#080b14" />
+  <meta name="description" content="Professional browser-based karaoke and audio mastering. AI processing runs on your device." />
+  <title>Karaoke Studio Web</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">K</div>
+        <div>
+          <div class="brand-name">Karaoke Studio</div>
+          <div class="brand-subtitle">Professional Web Edition</div>
+        </div>
+      </div>
+      <div class="engine-pill" id="enginePill">
+        <span class="status-dot"></span>
+        <span id="engineText">Checking browser…</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">ONE LINK · DESKTOP + MOBILE</div>
+          <h1>Professional karaoke without a heavy app.</h1>
+          <p>
+            Open the same site on a PC, laptop, tablet or phone. The layout adapts automatically,
+            while supported audio processing stays on your device.
+          </p>
+          <div class="hero-badges">
+            <span>Responsive</span>
+            <span>WebGPU / WASM</span>
+            <span>No Railway processing</span>
+            <span>Local audio</span>
+          </div>
+        </div>
+
+        <aside class="device-card">
+          <div class="device-row"><span>Layout</span><strong id="layoutMode">Auto</strong></div>
+          <div class="device-row"><span>AI acceleration</span><strong id="gpuMode">Detecting</strong></div>
+          <div class="device-row"><span>AI model</span><strong id="modelStatus">Not loaded</strong></div>
+          <div class="device-note">Desktop gets a wider workspace. Mobile switches to a single-column touch layout.</div>
+        </aside>
+      </section>
+
+      <section class="actions-grid" aria-label="Karaoke Studio tools">
+        <button class="action-card" data-action="youtube-karaoke">
+          <span class="action-icon">▶</span>
+          <span class="action-copy">
+            <strong>YouTube → Karaoke</strong>
+            <small>Open Y2Mate, download authorized audio, then import it here.</small>
+          </span>
+          <span class="chevron">›</span>
+        </button>
+
+        <button class="action-card" data-action="youtube-mp3">
+          <span class="action-icon">♫</span>
+          <span class="action-copy">
+            <strong>YouTube → MP3</strong>
+            <small>Browser handoff for media you own or are authorized to download.</small>
+          </span>
+          <span class="chevron">›</span>
+        </button>
+
+        <button class="action-card" data-action="upload-karaoke">
+          <span class="action-icon">🎤</span>
+          <span class="action-copy">
+            <strong>Upload → Karaoke</strong>
+            <small>HT-Demucs neural vocal separation in the browser.</small>
+          </span>
+          <span class="chevron">›</span>
+        </button>
+
+        <button class="action-card" data-action="master">
+          <span class="action-icon">✦</span>
+          <span class="action-copy">
+            <strong>Master Audio</strong>
+            <small>Browser-based EQ, compression and limiting.</small>
+          </span>
+          <span class="chevron">›</span>
+        </button>
+      </section>
+
+      <section class="workspace" id="workspace" hidden>
+        <div class="workspace-main">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="eyebrow" id="workspaceEyebrow">TOOL</div>
+                <h2 id="workspaceTitle">Workspace</h2>
+              </div>
+              <button class="ghost-button" id="closeWorkspace">Close</button>
+            </div>
+            <div id="workspaceBody"></div>
+          </div>
+        </div>
+
+        <aside class="workspace-side">
+          <div class="panel compact">
+            <h3>Processing</h3>
+            <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+            <div class="progress-line">
+              <strong id="progressStage">Ready</strong>
+              <span id="progressPercent">0%</span>
+            </div>
+            <p class="muted" id="progressDetail">Choose a tool to begin.</p>
+          </div>
+
+          <div class="panel compact">
+            <h3>Privacy</h3>
+            <p class="muted">
+              Uploaded audio is decoded and processed in this browser. Karaoke Studio does not send the song to Railway.
+            </p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="info-grid">
+        <article class="info-card">
+          <h3>Desktop</h3>
+          <p>Two-column workspace, larger controls and more room for progress, preview and exports.</p>
+        </article>
+        <article class="info-card">
+          <h3>Mobile</h3>
+          <p>Single-column cards, full-width buttons and touch targets sized for phone use.</p>
+        </article>
+        <article class="info-card">
+          <h3>Professional AI</h3>
+          <p>The first karaoke run downloads the HT-Demucs model. After that, the browser can reuse the cached model.</p>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <input id="audioPicker" type="file" accept="audio/*" hidden />
+  <script src="./app.js" type="module"></script>
+</body>
+</html>
