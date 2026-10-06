@@ -1,0 +1,39 @@
+name: Build Karaoke Cloud Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'cloud-worker/**'
+      - '.github/workflows/build-cloud-worker.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./cloud-worker
+          push: true
+          tags: |
+            ghcr.io/pranjalnamey/karaoke-studio-cloud-worker:latest
+            ghcr.io/pranjalnamey/karaoke-studio-cloud-worker:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/pranjalnamey/karaoke-studio-android
+            org.opencontainers.image.description=Karaoke Studio optional cloud processing worker
