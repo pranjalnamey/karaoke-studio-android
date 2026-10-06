@@ -5,10 +5,7 @@
   "globalHeaders": {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Permissions-Policy": "microphone=(), camera=(), geolocation=()",
-    "Cross-Origin-Opener-Policy": "same-origin",
-    "Cross-Origin-Embedder-Policy": "require-corp",
-    "Cross-Origin-Resource-Policy": "cross-origin"
+    "Permissions-Policy": "microphone=(), camera=(), geolocation=()"
   },
   "mimeTypes": {
     ".webmanifest": "application/manifest+json"
