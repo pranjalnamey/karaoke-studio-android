@@ -316,6 +316,7 @@ async function runCloudKaraoke() {
   toggleProcessButtons(true);
 
   try {
+    await getCloudPin();
     await waitForCloudWorker();
     setProgress("Uploading to cloud worker", 5, "Your phone is sending the audio to the private Karaoke Studio worker…");
 
@@ -367,15 +368,9 @@ async function runCloudKaraoke() {
       setProgress("Cancelled", 0, "Processing was cancelled.");
     } else {
       console.error(error);
-      setProgress("Cloud processing failed", 0, friendlyError(error));
-      const useLocal = window.confirm(
-        friendlyError(error) + "\n\nWould you like to try processing on this device instead?"
-      );
-      if (useLocal) {
-        activeCloudJobId = null;
-        toggleProcessButtons(false);
-        return runKaraoke();
-      }
+      const friendly = friendlyError(error);
+      setProgress("Cloud processing failed", 0, friendly);
+      alert(friendly + "\n\nPlease retry Create in Cloud after the worker configuration is corrected. Local processing is not recommended on low-memory phones.");
     }
   } finally {
     activeCloudJobId = null;
