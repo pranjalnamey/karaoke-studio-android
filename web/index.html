@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#080b14" />
-  <meta name="description" content="Professional browser-based karaoke and audio mastering. AI processing runs on your device." />
+  <meta name="description" content="Professional web karaoke with cloud lead-vocal removal and browser audio tools." />
   <title>Karaoke Studio Web</title>
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="stylesheet" href="./styles.css" />
@@ -31,14 +31,14 @@
           <div class="eyebrow">ONE LINK · DESKTOP + MOBILE</div>
           <h1>Professional karaoke without a heavy app.</h1>
           <p>
-            Open the same site on a PC, laptop, tablet or phone. The layout adapts automatically,
-            while supported audio processing stays on your device.
+            Open the same site on a PC, laptop, tablet or phone. Cloud karaoke handles the heavy AI work,
+            while lightweight audio tools can still run in the browser.
           </p>
           <div class="hero-badges">
             <span>Responsive</span>
-            <span>WebGPU / WASM</span>
-            <span>No Railway processing</span>
-            <span>Local audio</span>
+            <span>Azure Cloud AI</span>
+            <span>Phone friendly</span>
+            <span>Local fallback</span>
           </div>
         </div>
 
@@ -58,7 +58,7 @@
           <span class="action-icon">▶</span>
           <span class="action-copy">
             <strong>YouTube → Karaoke</strong>
-            <small>Open Y2Mate, download authorized audio, then import it here.</small>
+            <small>Send the pasted YouTube video to Y2Mate, download the MP3, then create karaoke in cloud.</small>
           </span>
           <span class="chevron">›</span>
         </button>
@@ -119,7 +119,7 @@
           <div class="panel compact">
             <h3>Privacy</h3>
             <p class="muted">
-              Uploaded audio is decoded and processed in this browser. Karaoke Studio does not send the song to Railway.
+              Cloud mode sends the selected audio to your private Karaoke Studio worker for processing. Local mode stays in this browser.
             </p>
           </div>
         </aside>
@@ -136,7 +136,7 @@
         </article>
         <article class="info-card">
           <h3>Professional AI</h3>
-          <p>The first karaoke run downloads UVR Karaoke 2. Phones automatically switch to a lower-memory profile; supported WASM browsers can also use multiple CPU threads.</p>
+          <p>Cloud karaoke uses UVR Karaoke 2 on the Azure worker, so phones do not need to run the heavy separation model themselves.</p>
         </article>
       </section>
     </main>
