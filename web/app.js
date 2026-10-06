@@ -132,10 +132,10 @@ function renderYouTube(karaoke) {
       <input class="text-input" id="ytUrl" inputmode="url" placeholder="https://youtube.com/watch?v=…" />
     </div>
     <div class="notice">
-      Karaoke Studio opens Y2Mate in your normal browser. Only use content you own or are authorized to download/process.
+      Karaoke Studio sends the selected YouTube video to Y2Mate in your normal browser. Only use content you own or are authorized to download/process.
     </div>
     <div class="button-row">
-      <button class="primary" id="openY2Mate">Open Y2Mate</button>
+      <button class="primary" id="openY2Mate">Open Y2Mate with this link</button>
       ${karaoke ? '<button class="secondary" id="importAfterDownload">Import downloaded audio</button>' : ""}
     </div>
   `;
@@ -146,9 +146,17 @@ function renderYouTube(karaoke) {
       alert("Paste a valid YouTube URL first.");
       return;
     }
+    const videoId = extractYouTubeVideoId(url);
     try { await navigator.clipboard.writeText(url); } catch {}
-    window.open("https://y2mate.gs/", "_blank", "noopener,noreferrer");
-    setProgress("Converter opened", 5, "The YouTube link was copied when browser permissions allowed it.");
+    const y2mateUrl = videoId ? "https://y2mate.gs/#" + encodeURIComponent(videoId) : "https://y2mate.gs/";
+    window.open(y2mateUrl, "_blank", "noopener,noreferrer");
+    setProgress(
+      "Converter opened",
+      5,
+      videoId
+        ? "The selected YouTube video was sent to Y2Mate. Choose/download the MP3 there, then return here."
+        : "Y2Mate opened and the YouTube link was copied when browser permissions allowed it."
+    );
   });
 
   if (karaoke) {
@@ -165,6 +173,28 @@ function isYouTubeUrl(value) {
     const h = u.hostname.toLowerCase();
     return h === "youtu.be" || h === "youtube.com" || h.endsWith(".youtube.com");
   } catch { return false; }
+}
+
+function extractYouTubeVideoId(value) {
+  try {
+    const u = new URL(value);
+    const h = u.hostname.toLowerCase();
+    let id = "";
+
+    if (h === "youtu.be") {
+      id = u.pathname.split("/").filter(Boolean)[0] || "";
+    } else if (h === "youtube.com" || h.endsWith(".youtube.com")) {
+      id = u.searchParams.get("v") || "";
+      if (!id) {
+        const parts = u.pathname.split("/").filter(Boolean);
+        if (["shorts", "embed", "live"].includes(parts[0])) id = parts[1] || "";
+      }
+    }
+
+    return /^[A-Za-z0-9_-]{11}$/.test(id) ? id : "";
+  } catch {
+    return "";
+  }
 }
 
 function renderUpload(mode) {
@@ -353,10 +383,9 @@ async function runCloudKaraoke() {
       if (job.status === "completed") {
         await showCloudResults(
           activeCloudJobId,
-          job.source_filename || "KaraokeStudio-Original-320k.mp3",
           job.karaoke_filename || "KaraokeStudio-Karaoke-320k.mp3"
         );
-        setProgress("Complete", 100, "Both MP3 and karaoke are ready.");
+        setProgress("Complete", 100, "Karaoke is ready to listen to or download.");
         activeCloudJobId = null;
         return;
       }
@@ -388,34 +417,19 @@ async function runCloudKaraoke() {
   }
 }
 
-async function showCloudResults(jobId, sourceName, karaokeName) {
-  setProgress("Downloading results", 96, "Bringing the finished MP3 files back to this device…");
+async function showCloudResults(jobId, karaokeName) {
+  setProgress("Downloading karaoke", 96, "Bringing the finished karaoke MP3 back to this device…");
 
-  const [sourceResponse, karaokeResponse] = await Promise.all([
-    cloudFetch("/jobs/" + jobId + "/download/source"),
-    cloudFetch("/jobs/" + jobId + "/download/karaoke")
-  ]);
-
-  const [sourceBlob, karaokeBlob] = await Promise.all([
-    sourceResponse.blob(),
-    karaokeResponse.blob()
-  ]);
-
-  const sourceUrl = URL.createObjectURL(sourceBlob);
+  const karaokeResponse = await cloudFetch("/jobs/" + jobId + "/download/karaoke");
+  const karaokeBlob = await karaokeResponse.blob();
   const karaokeUrl = URL.createObjectURL(karaokeBlob);
 
   const host = $("resultHost");
   if (!host) return;
   host.innerHTML = `
     <div class="result-card">
-      <h3>Both files are ready</h3>
-      <div class="notice good">The heavy AI processing happened on the cloud worker, not on this phone.</div>
-      <p class="muted">Original MP3</p>
-      <audio controls src="${sourceUrl}"></audio>
-      <div class="button-row">
-        <a class="primary" style="display:grid;place-items:center;text-decoration:none" href="${sourceUrl}" download="${escapeHtml(sourceName)}">Download MP3</a>
-      </div>
-      <p class="muted" style="margin-top:16px">Karaoke MP3</p>
+      <h3>Karaoke ready</h3>
+      <div class="notice good">Cloud processing is complete. Listen below or download the finished karaoke MP3.</div>
       <audio controls src="${karaokeUrl}"></audio>
       <div class="button-row">
         <a class="primary" style="display:grid;place-items:center;text-decoration:none" href="${karaokeUrl}" download="${escapeHtml(karaokeName)}">Download Karaoke</a>
