@@ -276,38 +276,42 @@ async function cloudFetch(path, options = {}, retryPin = true) {
 }
 
 async function waitForCloudWorker() {
-  const maxAttempts = 18;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  // Best-effort warm-up only. Do not block the real upload if the browser
+  // cannot read the cross-origin health response during an Azure cold start.
+  for (let attempt = 1; attempt <= 3; attempt++) {
     if (cancelRequested) throw new Error("Cancelled");
 
     setProgress(
-      "Waking cloud worker",
-      Math.min(4, 1 + Math.floor(attempt / 5)),
+      "Connecting to cloud worker",
+      2,
       attempt === 1
-        ? "Starting the private Karaoke Studio worker. A cold start can take a few minutes."
-        : "Cloud worker is still starting… attempt " + attempt + "/" + maxAttempts
+        ? "Connecting to the private Karaoke Studio worker…"
+        : "Worker is waking up… retry " + attempt + "/3"
     );
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
+    const timer = setTimeout(() => controller.abort(), 20000);
     try {
       const response = await fetch(CLOUD_WORKER_URL + "/health", {
         method: "GET",
         cache: "no-store",
         signal: controller.signal
       });
-      if (response.ok) {
-        clearTimeout(timer);
-        return true;
-      }
-    } catch {}
-    clearTimeout(timer);
+      clearTimeout(timer);
+      if (response.ok) return true;
+    } catch {
+      clearTimeout(timer);
+    }
 
-    if (attempt < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (attempt < 3) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
     }
   }
-  throw new Error("Cloud worker did not become ready in time. Please try again in a minute.");
+
+  // Let the authenticated upload be the definitive test. This avoids a
+  // misleading "worker not ready" error when /health is reachable directly
+  // but the browser's cross-origin warm-up check is blocked or delayed.
+  return false;
 }
 
 async function runCloudKaraoke() {
@@ -317,8 +321,14 @@ async function runCloudKaraoke() {
 
   try {
     await getCloudPin();
-    await waitForCloudWorker();
-    setProgress("Uploading to cloud worker", 5, "Your phone is sending the audio to the private Karaoke Studio worker…");
+    const workerWarm = await waitForCloudWorker();
+    setProgress(
+      "Uploading to cloud worker",
+      5,
+      workerWarm
+        ? "Cloud worker is ready. Uploading the audio…"
+        : "Sending the audio now. Azure may still be finishing a cold start…"
+    );
 
     const form = new FormData();
     form.append("file", selectedFile, selectedFile.name);
